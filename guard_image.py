@@ -187,11 +187,16 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
             _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
             _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
         except Exception as e:
-            if "SSL" in str(e) or "certificate" in str(e).lower() or "ConnectionError" in str(type(e).__name__):
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network", "huggingface", "config.json"]):
                 logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
-                logger.warning("Skipping violence check")
+                logger.warning("Skipping violence check - model not available offline")
+                _model_cache["clip_unavailable"] = True
                 return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "skipped": True}
             raise
+
+    if _model_cache.get("clip_unavailable"):
+        return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "skipped": True}
 
     model = _model_cache["clip_model"]
     processor = _model_cache["clip_processor"]
