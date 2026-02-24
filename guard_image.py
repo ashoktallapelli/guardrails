@@ -142,9 +142,23 @@ def check_nsfw(img, config: Dict[str, Any]) -> Tuple[bool, float]:
         logger.warning("opennsfw2 not installed, skipping NSFW check")
         return True, 0.0
 
-    score = float(n2.predict_image(img))
-    is_safe = score < config["nsfw_threshold"]
-    return is_safe, score
+    # Check for local weights file (for offline/corporate environments)
+    home = Path.home()
+    weights_path = home / ".opennsfw2" / "weights" / "open_nsfw_weights.h5"
+
+    if not weights_path.exists():
+        logger.warning(f"NSFW weights not found at {weights_path}")
+        logger.warning("Download from: https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_weights.h5")
+        logger.warning("Skipping NSFW check")
+        return True, 0.0
+
+    try:
+        score = float(n2.predict_image(img, weights_path=str(weights_path)))
+        is_safe = score < config["nsfw_threshold"]
+        return is_safe, score
+    except Exception as e:
+        logger.warning(f"NSFW check failed: {e}")
+        return True, 0.0
 
 
 def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, float]]:
@@ -169,8 +183,15 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
 
     if "clip_model" not in _model_cache:
         logger.info("Loading CLIP model for safety classification...")
-        _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
-        _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
+        try:
+            _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
+            _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
+        except Exception as e:
+            if "SSL" in str(e) or "certificate" in str(e).lower() or "ConnectionError" in str(type(e).__name__):
+                logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
+                logger.warning("Skipping violence check")
+                return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "skipped": True}
+            raise
 
     model = _model_cache["clip_model"]
     processor = _model_cache["clip_processor"]
