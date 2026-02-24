@@ -124,7 +124,25 @@ SHA256:   a1b2c3d4e5f6...
 MIME:     image/jpeg
 Size:     800x600
 NSFW:     0.0234 (safe)
+Violence: 0.0200
+Weapons:  0.0500
+Safe:     0.9200
 Output:   test_images/sample_sanitized.jpg
 Reasons:  All checks passed
 ============================================================
+```
+
+## Troubleshooting
+
+### Windows SSL Certificate Error
+
+If you see `SSL: CERTIFICATE_VERIFY_FAILED` error on Windows:
+
+```powershell
+# Re-sync dependencies (certifi should fix it):
+uv sync
+
+# Or manually download model weights:
+# 1. Download: https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_weights.h5
+# 2. Place in: C:\Users\<username>\.opennsfw2\weights\open_nsfw_weights.h5
 ```

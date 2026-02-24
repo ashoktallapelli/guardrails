@@ -19,11 +19,22 @@ import hashlib
 import io
 import json
 import logging
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
 
 import yaml
+
+# Fix SSL certificates on Windows
+if sys.platform == 'win32':
+    try:
+        import certifi
+        os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+        os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+    except ImportError:
+        pass
 
 # Configure logging
 logging.basicConfig(
