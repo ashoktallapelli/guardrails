@@ -4,10 +4,11 @@ A local-first image guardrails pipeline for validating and sanitizing images bef
 
 ## Features
 
-- **File Type Validation**: Validates by magic bytes, not extension
+- **File Type Validation**: Validates by magic bytes (libmagic), not extension
 - **EXIF Stripping**: Removes GPS, device IDs, and other metadata
 - **NSFW Detection**: Uses OpenNSFW2 (CNN-based, runs locally)
-- **PII Redaction**: OCR + Presidio to mask sensitive text in images
+- **Violence/Safety Detection**: CLIP-based classifier for violence, weapons, disturbing content
+- **PII Redaction**: OCR + Microsoft Presidio to mask sensitive text in images
 - **Face Blur**: OpenCV-based face detection with Gaussian blur
 - **Perceptual Hashing**: For known-bad content matching
 
@@ -24,6 +25,11 @@ brew install libmagic tesseract
 ```bash
 sudo apt-get install libmagic1 tesseract-ocr
 ```
+
+**Windows:**
+1. **Tesseract OCR**: Download and install from https://github.com/UB-Mannheim/tesseract/wiki
+   - Add to PATH: `C:\Program Files\Tesseract-OCR`
+2. **libmagic**: Automatically handled by `python-magic-bin` package (no manual install needed)
 
 ### 2. Install Python Dependencies
 
@@ -91,11 +97,16 @@ Input Image
     │
     ├─► Strip EXIF Metadata
     │
-    ├─► NSFW Detection ──► REJECT if score >= threshold
+    ├─► NSFW Detection (OpenNSFW2) ──► REJECT if >= 0.80
     │
-    ├─► PII Redaction (OCR + mask)
+    ├─► Violence/Safety (CLIP) ──► REJECT if unsafe >= 0.70
+    │       ├── violence/gore
+    │       ├── weapons
+    │       └── disturbing content
     │
-    ├─► Face Blur (anonymize)
+    ├─► PII Redaction (Presidio + OCR)
+    │
+    ├─► Face Blur (OpenCV)
     │
     ├─► Compute Perceptual Hash
     │
