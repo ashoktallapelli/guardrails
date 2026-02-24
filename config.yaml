@@ -1,0 +1,50 @@
+# Image Guardrails Configuration
+# ================================
+# Adjust these thresholds based on your use case
+
+# File validation
+allowed_mime_types:
+  - "image/jpeg"
+  - "image/png"
+  - "image/webp"
+  - "image/gif"
+
+max_file_size_mb: 10
+
+max_resolution:
+  width: 4096
+  height: 4096
+
+# NSFW Detection
+# Score ranges from 0.0 (safe) to 1.0 (explicit)
+# Lower threshold = stricter filtering
+nsfw_threshold: 0.80
+
+# Violence/Safety Detection (LAION-SAFETY style using CLIP)
+# Uses zero-shot classification to detect:
+#   - violence, gore, blood, injury
+#   - weapons (guns, knives)
+#   - disturbing/graphic content
+# Combined unsafe score threshold (violence + weapons + disturbing)
+enable_violence_check: true
+violence_threshold: 0.70
+
+# Privacy features
+enable_pii_redaction: true
+enable_face_blur: true
+face_blur_kernel_size: 51  # Must be odd number; larger = more blur
+
+# Output settings
+output_quality: 95  # JPEG quality (1-100)
+
+# Action thresholds for tiered response
+# (for use with demo_app.py)
+thresholds:
+  auto_allow_below: 0.3   # NSFW < 0.3 -> auto allow
+  manual_review_above: 0.5  # NSFW >= 0.5 but < 0.8 -> manual review
+  auto_reject_above: 0.8  # NSFW >= 0.8 -> auto reject
+
+# Logging
+log_level: "INFO"
+log_decisions_to_file: false
+log_file_path: "guardrails_audit.log"
