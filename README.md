@@ -50,12 +50,12 @@ curl -L "https://picsum.photos/800/600" -o test_images/sample.jpg
 ### Process a Single Image
 
 ```bash
-uv run python guard_image.py test_images/sample.jpg
+uv run python image_guard.py test_images/sample.jpg
 ```
 
 With JSON output:
 ```bash
-uv run python guard_image.py test_images/sample.jpg --json
+uv run python image_guard.py test_images/sample.jpg --json
 ```
 
 ### Demo App

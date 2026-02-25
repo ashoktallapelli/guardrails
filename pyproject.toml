@@ -35,7 +35,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
-only-include = ["guard_image.py", "demo_app.py"]
+only-include = ["image_guard.py", "image_qa.py", "demo_app.py"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,17 +1,18 @@
 """
-guard_image.py - Image Guardrails Pipeline
+image_guard.py - Image Guardrails Pipeline
 
 A local-first pre-inference pipeline that validates and sanitizes images:
 1. Content-type validation (magic bytes)
 2. EXIF metadata stripping
 3. NSFW content detection
-4. PII redaction (OCR + masking)
-5. Face detection and blurring
-6. Outputs sanitized image with decision logging
+4. Violence/safety detection
+5. PII redaction (OCR + masking)
+6. Face detection and blurring
+7. Outputs sanitized image with decision logging
 
 Usage:
-    python guard_image.py /path/to/input.jpg
-    python guard_image.py /path/to/input.jpg --config config.yaml
+    python image_guard.py /path/to/input.jpg
+    python image_guard.py /path/to/input.jpg --config config.yaml
 """
 
 import argparse

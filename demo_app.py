@@ -22,7 +22,7 @@ from typing import List, Dict, Any
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from guard_image import run_guardrails, load_config, DEFAULT_CONFIG
+from image_guard import run_guardrails, load_config, DEFAULT_CONFIG
 
 
 def create_test_images_dir():

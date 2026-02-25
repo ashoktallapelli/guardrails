@@ -134,7 +134,7 @@ def run_guardrails_and_qa(
     Returns:
         (passed_guardrails, answer_or_error)
     """
-    from guard_image import run_guardrails, load_config
+    from image_guard import run_guardrails, load_config
 
     # Step 1: Run guardrails (unless skipped)
     if not skip_guardrails:
@@ -163,7 +163,7 @@ def run_guardrails_and_qa(
 
 def interactive_mode(image_path: Path):
     """Interactive Q&A session with an image."""
-    from guard_image import run_guardrails, load_config
+    from image_guard import run_guardrails, load_config
 
     print(f"\n{'='*60}")
     print("Image Q&A - Interactive Mode")
