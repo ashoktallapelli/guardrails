@@ -21,6 +21,8 @@ Thumbs.db
 # Project specific
 test_images/*.jpg
 test_images/*.png
+test_images/*.webp
+test_images/*.jpeg
 !test_images/README.txt
 *.log
 uv.lock

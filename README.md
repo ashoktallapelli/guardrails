@@ -132,6 +132,27 @@ Reasons:  All checks passed
 ============================================================
 ```
 
+## Image Q&A (Visual Question Answering)
+
+After an image passes guardrails, you can ask questions about it:
+
+```bash
+# Describe the image
+uv run python image_qa.py test_images/sample.jpg --describe
+
+# Ask a specific question
+uv run python image_qa.py test_images/sample.jpg --question "What colors are in this image?"
+
+# Interactive Q&A mode
+uv run python image_qa.py test_images/sample.jpg --interactive
+```
+
+**Flow:**
+```
+Image → Guardrails Check → If PASS → Load BLIP Model → Answer Questions
+                         → If REJECT → "Cannot proceed with rejected image"
+```
+
 ## Troubleshooting
 
 ### Windows SSL Certificate Error
