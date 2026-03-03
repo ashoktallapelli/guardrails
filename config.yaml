@@ -29,6 +29,11 @@ nsfw_threshold: 0.80
 enable_violence_check: true
 violence_threshold: 0.70
 
+# Hate Symbol Detection (CLIP zero-shot classification)
+# Detects extremist imagery, nazi symbols, racist symbols
+enable_hate_symbol_check: true
+hate_symbol_threshold: 0.75
+
 # Privacy features
 enable_pii_redaction: true
 enable_face_blur: true

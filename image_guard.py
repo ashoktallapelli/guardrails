@@ -6,9 +6,10 @@ A local-first pre-inference pipeline that validates and sanitizes images:
 2. EXIF metadata stripping
 3. NSFW content detection
 4. Violence/safety detection
-5. PII redaction (OCR + masking)
-6. Face detection and blurring
-7. Outputs sanitized image with decision logging
+5. Hate symbol detection (CLIP-based)
+6. PII redaction (OCR + masking)
+7. Face detection and blurring
+8. Outputs sanitized image with decision logging
 
 Usage:
     python image_guard.py /path/to/input.jpg
@@ -52,6 +53,8 @@ DEFAULT_CONFIG = {
     "nsfw_threshold": 0.80,
     "violence_threshold": 0.70,
     "enable_violence_check": True,
+    "enable_hate_symbol_check": True,
+    "hate_symbol_threshold": 0.75,
     "enable_pii_redaction": True,
     "enable_face_blur": True,
     "face_blur_kernel_size": 51,
@@ -244,6 +247,110 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
         return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "error": str(e)}
 
 
+def detect_pii(img) -> Dict[str, Any]:
+    """
+    Detect PII in images using OCR + Presidio Analyzer.
+    Returns detection results WITHOUT modifying the image.
+    """
+    try:
+        import pytesseract
+        from presidio_analyzer import AnalyzerEngine
+    except ImportError:
+        logger.warning("pytesseract or presidio-analyzer not installed, skipping PII detection")
+        return {"enabled": False, "error": "dependencies not installed"}
+
+    try:
+        # Extract text using OCR
+        extracted_text = pytesseract.image_to_string(img)
+
+        if not extracted_text.strip():
+            return {
+                "enabled": True,
+                "text_found": False,
+                "text_length": 0,
+                "entities": [],
+                "entity_count": 0
+            }
+
+        # Analyze text for PII
+        analyzer = AnalyzerEngine()
+        results = analyzer.analyze(text=extracted_text, language="en")
+
+        entities = []
+        for result in results:
+            entities.append({
+                "type": result.entity_type,
+                "text": extracted_text[result.start:result.end],
+                "score": round(result.score, 4),
+                "start": result.start,
+                "end": result.end
+            })
+
+        logger.info(f"PII detection: found {len(entities)} entities")
+
+        return {
+            "enabled": True,
+            "text_found": True,
+            "text_length": len(extracted_text),
+            "extracted_text": extracted_text[:1000] if len(extracted_text) > 1000 else extracted_text,
+            "entities": entities,
+            "entity_count": len(entities)
+        }
+    except Exception as e:
+        logger.warning(f"PII detection failed: {e}")
+        return {"enabled": True, "error": str(e)}
+
+
+def detect_faces(img, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Detect faces in image using OpenCV Haar cascades.
+    Returns detection results WITHOUT modifying the image.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        logger.warning("opencv-python not installed, skipping face detection")
+        return {"enabled": False, "error": "opencv not installed"}
+
+    try:
+        # Convert PIL to OpenCV format
+        cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+
+        # Load face detection cascade
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+
+        # Detect faces
+        gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.3,
+            minNeighbors=5,
+            minSize=(30, 30)
+        )
+
+        face_boxes = []
+        for (x, y, w, h) in faces:
+            face_boxes.append({
+                "x": int(x),
+                "y": int(y),
+                "width": int(w),
+                "height": int(h)
+            })
+
+        logger.info(f"Face detection: found {len(faces)} face(s)")
+
+        return {
+            "enabled": True,
+            "face_count": len(faces),
+            "faces": face_boxes
+        }
+    except Exception as e:
+        logger.warning(f"Face detection failed: {e}")
+        return {"enabled": True, "error": str(e)}
+
+
 def redact_pii(img):
     """
     Use Presidio Image Redactor to detect and mask PII in images.
@@ -305,6 +412,226 @@ def blur_faces(img, config: Dict[str, Any]):
     # Convert back to PIL
     from PIL import Image
     return Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+
+
+def check_hate_symbols(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, float]]:
+    """
+    Detect hate symbols using CLIP zero-shot classification.
+    Uses the same CLIP model as violence detection for efficiency.
+
+    Returns (is_safe, scores_dict) where scores_dict contains confidence scores
+    for various hate symbol categories.
+    """
+    try:
+        from transformers import CLIPProcessor, CLIPModel
+        import torch
+    except ImportError:
+        logger.warning("transformers/torch not installed, skipping hate symbol check")
+        return True, {"skipped": True}
+
+    # Use cached model if available (shared with violence check)
+    model_name = "openai/clip-vit-base-patch32"
+
+    if "clip_model" not in _model_cache:
+        logger.info("Loading CLIP model for hate symbol detection...")
+        try:
+            _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
+            _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network", "huggingface", "config.json"]):
+                logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
+                logger.warning("Skipping hate symbol check - model not available offline")
+                _model_cache["clip_unavailable"] = True
+                return True, {"skipped": True, "reason": "model unavailable"}
+            raise
+
+    if _model_cache.get("clip_unavailable"):
+        return True, {"skipped": True, "reason": "model unavailable"}
+
+    model = _model_cache["clip_model"]
+    processor = _model_cache["clip_processor"]
+
+    # Hate symbol categories for zero-shot classification
+    # Using general descriptions to detect symbols/imagery
+    hate_labels = [
+        "a normal, safe photograph without any symbols",
+        "hate symbols, extremist imagery, or offensive symbols",
+        "nazi symbols, swastika, or white supremacist imagery",
+        "confederate flag or racist symbols",
+    ]
+
+    threshold = config.get("hate_symbol_threshold", 0.60)
+
+    try:
+        inputs = processor(
+            text=hate_labels,
+            images=img,
+            return_tensors="pt",
+            padding=True
+        )
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits_per_image = outputs.logits_per_image
+            probs = logits_per_image.softmax(dim=1).squeeze().tolist()
+
+        scores = {
+            "safe": round(probs[0], 4),
+            "hate_symbols": round(probs[1], 4),
+            "nazi_symbols": round(probs[2], 4),
+            "racist_symbols": round(probs[3], 4),
+        }
+
+        # Combined hate symbol score
+        hate_score = scores["hate_symbols"] + scores["nazi_symbols"] + scores["racist_symbols"]
+        is_safe = hate_score < threshold
+
+        scores["combined_hate_score"] = round(hate_score, 4)
+
+        logger.info(f"Hate symbol scores: safe={scores['safe']:.2f}, combined_hate={hate_score:.2f}")
+
+        return is_safe, scores
+
+    except Exception as e:
+        logger.warning(f"Hate symbol check failed: {e}")
+        return True, {"error": str(e)}
+
+
+def analyze_image(
+    image_path: Path,
+    config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Analyze image and return all detection results as JSON.
+    Does NOT modify or save the image.
+
+    Returns a comprehensive analysis dictionary with:
+    - decision: ALLOW or REJECT
+    - is_safe: boolean
+    - results: all check results (nsfw, violence, hate_symbols, pii, faces)
+    - meta: timing, file info
+    """
+    import time
+    from PIL import Image
+
+    t0 = time.time()
+
+    result = {
+        "input_path": str(image_path),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "decision": "ALLOW",
+        "is_safe": True,
+        "results": {},
+        "meta": {}
+    }
+
+    # Step 1: Compute file hash
+    file_hash = sha256_file(image_path)
+    result["meta"]["sha256"] = file_hash
+    logger.info(f"Analyzing: {image_path} (SHA256: {file_hash[:16]}...)")
+
+    # Step 2: Validate file type
+    valid, mime_info = validate_file_type(image_path, config)
+    result["results"]["file_validation"] = {
+        "valid": valid,
+        "mime_type": mime_info if valid else None,
+        "error": mime_info if not valid else None,
+        "max_size_mb": config["max_file_size_mb"]
+    }
+
+    if not valid:
+        result["decision"] = "REJECT"
+        result["is_safe"] = False
+        result["meta"]["processing_ms"] = int((time.time() - t0) * 1000)
+        return result
+
+    result["meta"]["mime_type"] = mime_info
+    result["meta"]["file_size_bytes"] = image_path.stat().st_size
+
+    # Step 3: Load and validate resolution
+    try:
+        img = Image.open(image_path).convert("RGB")
+    except Exception as e:
+        result["decision"] = "REJECT"
+        result["is_safe"] = False
+        result["results"]["file_validation"]["error"] = f"Failed to open: {e}"
+        result["meta"]["processing_ms"] = int((time.time() - t0) * 1000)
+        return result
+
+    valid, res_info = validate_resolution(img, config)
+    width, height = img.size
+    result["results"]["resolution"] = {
+        "valid": valid,
+        "width": width,
+        "height": height,
+        "max_width": config["max_resolution"]["width"],
+        "max_height": config["max_resolution"]["height"]
+    }
+
+    if not valid:
+        result["decision"] = "REJECT"
+        result["is_safe"] = False
+        result["meta"]["processing_ms"] = int((time.time() - t0) * 1000)
+        return result
+
+    # Step 4: NSFW content check
+    is_safe, nsfw_score = check_nsfw(img, config)
+    result["results"]["nsfw"] = {
+        "safe": is_safe,
+        "score": round(nsfw_score, 4),
+        "threshold": config["nsfw_threshold"]
+    }
+
+    if not is_safe:
+        result["decision"] = "REJECT"
+        result["is_safe"] = False
+
+    # Step 5: Violence/Safety check
+    if config.get("enable_violence_check", True):
+        violence_safe, safety_scores = check_violence_safety(img, config)
+        result["results"]["violence"] = {
+            "safe": violence_safe,
+            "scores": safety_scores,
+            "threshold": config["violence_threshold"]
+        }
+
+        if not violence_safe:
+            result["decision"] = "REJECT"
+            result["is_safe"] = False
+
+    # Step 6: Hate symbol detection
+    if config.get("enable_hate_symbol_check", True):
+        hate_safe, hate_scores = check_hate_symbols(img, config)
+        result["results"]["hate_symbols"] = {
+            "safe": hate_safe,
+            "scores": hate_scores,
+            "threshold": config.get("hate_symbol_threshold", 0.75)
+        }
+
+        if not hate_safe:
+            result["decision"] = "REJECT"
+            result["is_safe"] = False
+
+    # Step 7: PII detection (without redaction)
+    if config.get("enable_pii_redaction", True):
+        pii_result = detect_pii(img)
+        result["results"]["pii"] = pii_result
+
+    # Step 8: Face detection (without blur)
+    if config.get("enable_face_blur", True):
+        face_result = detect_faces(img, config)
+        result["results"]["faces"] = face_result
+
+    # Step 9: Compute perceptual hash
+    phash = compute_perceptual_hash(img)
+    result["meta"]["perceptual_hash"] = phash
+
+    # Finalize
+    result["meta"]["processing_ms"] = int((time.time() - t0) * 1000)
+
+    logger.info(f"Analysis complete: {result['decision']}")
+    return result
 
 
 def compute_perceptual_hash(img) -> str:
@@ -417,22 +744,38 @@ def run_guardrails(
             logger.warning(f"REJECT: Unsafe content detected (scores: {safety_scores})")
             return result
 
-    # Step 7: PII redaction (OCR + masking)
+    # Step 7: Hate symbol detection (CLIP-based)
+    if config.get("enable_hate_symbol_check", True):
+        is_safe, hate_scores = check_hate_symbols(img, config)
+        result["checks"]["hate_symbols"] = {
+            "safe": is_safe,
+            "scores": hate_scores
+        }
+
+        if not is_safe:
+            result["decision"] = "REJECT"
+            result["reasons"].append(
+                f"Hate symbols detected: combined_score={hate_scores.get('combined_hate_score', 0):.2f}"
+            )
+            logger.warning(f"REJECT: Hate symbols detected (scores: {hate_scores})")
+            return result
+
+    # Step 8: PII redaction (OCR + masking)
     if config["enable_pii_redaction"]:
         img = redact_pii(img)
         result["checks"]["pii_redaction"] = True
 
-    # Step 8: Face blur for anonymization
+    # Step 9: Face blur for anonymization
     if config["enable_face_blur"]:
         img = blur_faces(img, config)
         result["checks"]["face_blur"] = True
 
-    # Step 9: Compute perceptual hash (for known-bad matching)
+    # Step 10: Compute perceptual hash (for known-bad matching)
     phash = compute_perceptual_hash(img)
     result["perceptual_hash"] = phash
     result["checks"]["phash_computed"] = True
 
-    # Step 10: Save sanitized output
+    # Step 11: Save sanitized output
     if output_dir is None:
         output_dir = image_path.parent
 
@@ -466,6 +809,11 @@ def main():
         action="store_true",
         help="Output result as JSON"
     )
+    parser.add_argument(
+        "--analyze-only", "-a",
+        action="store_true",
+        help="Analyze only - return JSON results without modifying the image"
+    )
     args = parser.parse_args()
 
     image_path = Path(args.image)
@@ -475,6 +823,13 @@ def main():
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path)
 
+    # Analyze-only mode: return JSON without modifying image
+    if args.analyze_only:
+        result = analyze_image(image_path, config)
+        print(json.dumps(result, indent=2))
+        return
+
+    # Normal mode: sanitize and save image
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)

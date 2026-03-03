@@ -8,6 +8,7 @@ A local-first image guardrails pipeline for validating and sanitizing images bef
 - **EXIF Stripping**: Removes GPS, device IDs, and other metadata
 - **NSFW Detection**: Uses OpenNSFW2 (CNN-based, runs locally)
 - **Violence/Safety Detection**: CLIP-based classifier for violence, weapons, disturbing content
+- **Hate Symbol Detection**: CLIP zero-shot classification for extremist/hate imagery
 - **PII Redaction**: OCR + Microsoft Presidio to mask sensitive text in images
 - **Face Blur**: OpenCV-based face detection with Gaussian blur
 - **Perceptual Hashing**: For known-bad content matching
@@ -80,7 +81,10 @@ uv run python demo_app.py batch test_images/
 Edit `config.yaml` to adjust thresholds:
 
 ```yaml
-nsfw_threshold: 0.80       # Lower = stricter
+nsfw_threshold: 0.80              # Lower = stricter
+violence_threshold: 0.70          # Combined unsafe score threshold
+enable_hate_symbol_check: true    # CLIP-based hate symbol detection
+hate_symbol_threshold: 0.75       # Hate symbol score threshold
 enable_pii_redaction: true
 enable_face_blur: true
 max_file_size_mb: 10
@@ -103,6 +107,11 @@ Input Image
     │       ├── violence/gore
     │       ├── weapons
     │       └── disturbing content
+    │
+    ├─► Hate Symbol Detection (CLIP) ──► REJECT if >= 0.75
+    │       ├── extremist imagery
+    │       ├── nazi symbols
+    │       └── racist symbols
     │
     ├─► PII Redaction (Presidio + OCR)
     │
