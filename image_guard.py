@@ -188,16 +188,23 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
     if "clip_model" not in _model_cache:
         logger.info("Loading CLIP model for safety classification...")
         try:
-            _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
-            _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network", "huggingface", "config.json"]):
-                logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
-                logger.warning("Skipping violence check - model not available offline")
-                _model_cache["clip_unavailable"] = True
-                return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "skipped": True}
-            raise
+            # Try local cache first (no network access)
+            _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name, local_files_only=True)
+            _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name, local_files_only=True)
+            logger.info("Loaded CLIP model from local cache")
+        except Exception as local_error:
+            logger.info(f"Model not in local cache, trying to download...")
+            try:
+                _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
+                _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
+            except Exception as e:
+                error_str = str(e).lower()
+                if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network", "huggingface", "config.json"]):
+                    logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
+                    logger.warning("Skipping violence check - model not available offline")
+                    _model_cache["clip_unavailable"] = True
+                    return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "skipped": True}
+                raise
 
     if _model_cache.get("clip_unavailable"):
         return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "skipped": True}
@@ -435,16 +442,23 @@ def check_hate_symbols(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, flo
     if "clip_model" not in _model_cache:
         logger.info("Loading CLIP model for hate symbol detection...")
         try:
-            _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
-            _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network", "huggingface", "config.json"]):
-                logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
-                logger.warning("Skipping hate symbol check - model not available offline")
-                _model_cache["clip_unavailable"] = True
-                return True, {"skipped": True, "reason": "model unavailable"}
-            raise
+            # Try local cache first (no network access)
+            _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name, local_files_only=True)
+            _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name, local_files_only=True)
+            logger.info("Loaded CLIP model from local cache")
+        except Exception as local_error:
+            logger.info(f"Model not in local cache, trying to download...")
+            try:
+                _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
+                _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
+            except Exception as e:
+                error_str = str(e).lower()
+                if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network", "huggingface", "config.json"]):
+                    logger.warning(f"Cannot download CLIP model (network/SSL issue): {e}")
+                    logger.warning("Skipping hate symbol check - model not available offline")
+                    _model_cache["clip_unavailable"] = True
+                    return True, {"skipped": True, "reason": "model unavailable"}
+                raise
 
     if _model_cache.get("clip_unavailable"):
         return True, {"skipped": True, "reason": "model unavailable"}
