@@ -27,6 +27,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
 
+# Suppress HuggingFace background SSL errors (safetensors auto-conversion thread)
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+
 import yaml
 
 # Fix SSL certificates on Windows
