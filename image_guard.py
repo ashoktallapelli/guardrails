@@ -403,6 +403,156 @@ def detect_pii(img) -> Dict[str, Any]:
         return {"enabled": True, "error": str(e)}
 
 
+def detect_text_pii(text: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Detect PII in text using Presidio Analyzer.
+    Returns detection results with entity details.
+    """
+    try:
+        from presidio_analyzer import AnalyzerEngine
+    except ImportError:
+        logger.warning("presidio-analyzer not installed, skipping text PII detection")
+        return {"enabled": False, "error": "presidio-analyzer not installed"}
+
+    if not text or not text.strip():
+        return {
+            "enabled": True,
+            "text_length": 0,
+            "entities": [],
+            "entity_count": 0
+        }
+
+    try:
+        # Get configured entity types or use defaults
+        entity_types = config.get("pii_entity_types", None)
+        language = config.get("pii_language", "en")
+        score_threshold = config.get("pii_score_threshold", 0.5)
+
+        # Initialize analyzer (cached)
+        if "text_analyzer" not in _model_cache:
+            _model_cache["text_analyzer"] = AnalyzerEngine()
+
+        analyzer = _model_cache["text_analyzer"]
+
+        # Analyze text for PII
+        results = analyzer.analyze(
+            text=text,
+            language=language,
+            entities=entity_types,
+            score_threshold=score_threshold
+        )
+
+        entities = []
+        for result in results:
+            entities.append({
+                "type": result.entity_type,
+                "text": text[result.start:result.end],
+                "score": round(result.score, 4),
+                "start": result.start,
+                "end": result.end
+            })
+
+        logger.info(f"Text PII detection: found {len(entities)} entities")
+
+        return {
+            "enabled": True,
+            "text_length": len(text),
+            "entities": entities,
+            "entity_count": len(entities)
+        }
+    except Exception as e:
+        logger.warning(f"Text PII detection failed: {e}")
+        return {"enabled": True, "error": str(e)}
+
+
+def anonymize_text_pii(text: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Detect and anonymize PII in text using Presidio.
+    Returns anonymized text and detection details.
+
+    Supports operators: replace, redact, mask, hash, encrypt
+    """
+    try:
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_anonymizer import AnonymizerEngine
+        from presidio_anonymizer.entities import OperatorConfig
+    except ImportError:
+        logger.warning("presidio packages not installed, skipping text PII anonymization")
+        return {"enabled": False, "error": "presidio packages not installed"}
+
+    if not text or not text.strip():
+        return {
+            "enabled": True,
+            "original_length": 0,
+            "anonymized_text": "",
+            "entities": [],
+            "entity_count": 0
+        }
+
+    try:
+        # Get configuration
+        language = config.get("pii_language", "en")
+        score_threshold = config.get("pii_score_threshold", 0.5)
+        default_operator = config.get("pii_operator", "replace")
+        operator_config = config.get("pii_operator_config", {})
+
+        # Initialize engines (cached)
+        if "text_analyzer" not in _model_cache:
+            _model_cache["text_analyzer"] = AnalyzerEngine()
+        if "text_anonymizer" not in _model_cache:
+            _model_cache["text_anonymizer"] = AnonymizerEngine()
+
+        analyzer = _model_cache["text_analyzer"]
+        anonymizer = _model_cache["text_anonymizer"]
+
+        # Analyze text for PII
+        results = analyzer.analyze(
+            text=text,
+            language=language,
+            score_threshold=score_threshold
+        )
+
+        # Build operators configuration
+        operators = {}
+        for entity_type in set(r.entity_type for r in results):
+            entity_config = operator_config.get(entity_type, {})
+            op_type = entity_config.get("type", default_operator)
+            op_params = entity_config.get("params", {"new_value": f"<{entity_type}>"})
+            operators[entity_type] = OperatorConfig(op_type, op_params)
+
+        # Anonymize text
+        anonymized = anonymizer.anonymize(
+            text=text,
+            analyzer_results=results,
+            operators=operators
+        )
+
+        # Build entity list
+        entities = []
+        for result in results:
+            entities.append({
+                "type": result.entity_type,
+                "original_text": text[result.start:result.end],
+                "score": round(result.score, 4),
+                "start": result.start,
+                "end": result.end
+            })
+
+        logger.info(f"Text PII anonymization: processed {len(entities)} entities")
+
+        return {
+            "enabled": True,
+            "original_length": len(text),
+            "anonymized_text": anonymized.text,
+            "anonymized_length": len(anonymized.text),
+            "entities": entities,
+            "entity_count": len(entities)
+        }
+    except Exception as e:
+        logger.warning(f"Text PII anonymization failed: {e}")
+        return {"enabled": True, "error": str(e)}
+
+
 def detect_faces(img, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Detect faces in image using OpenCV Haar cascades.
@@ -898,11 +1048,36 @@ def run_guardrails(
     return result
 
 
+def analyze_text(text: str, config: Dict[str, Any], anonymize: bool = False) -> Dict[str, Any]:
+    """
+    Analyze text for PII and optionally anonymize.
+    Returns analysis results as a dictionary.
+    """
+    result = {
+        "input_type": "text",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "original_length": len(text),
+    }
+
+    if anonymize:
+        pii_result = anonymize_text_pii(text, config)
+        result["pii"] = pii_result
+        result["anonymized"] = True
+        if "anonymized_text" in pii_result:
+            result["output_text"] = pii_result["anonymized_text"]
+    else:
+        pii_result = detect_text_pii(text, config)
+        result["pii"] = pii_result
+        result["anonymized"] = False
+
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Image Guardrails Pipeline - Validate and sanitize images before AI processing"
     )
-    parser.add_argument("image", help="Path to input image")
+    parser.add_argument("image", nargs="?", help="Path to input image")
     parser.add_argument(
         "--config", "-c",
         help="Path to YAML config file",
@@ -923,14 +1098,46 @@ def main():
         action="store_true",
         help="Analyze only - return JSON results without modifying the image"
     )
+    # Text PII arguments
+    parser.add_argument(
+        "--text", "-t",
+        help="Analyze text for PII (direct input)"
+    )
+    parser.add_argument(
+        "--text-file",
+        help="Analyze text from file for PII"
+    )
+    parser.add_argument(
+        "--anonymize",
+        action="store_true",
+        help="Anonymize PII in text (use with --text or --text-file)"
+    )
     args = parser.parse_args()
+
+    config_path = Path(args.config) if args.config else None
+    config = load_config(config_path)
+
+    # Text PII mode
+    if args.text or args.text_file:
+        if args.text_file:
+            text_path = Path(args.text_file)
+            if not text_path.exists():
+                raise SystemExit(f"Error: Text file not found: {text_path}")
+            text = text_path.read_text(encoding="utf-8")
+        else:
+            text = args.text
+
+        result = analyze_text(text, config, anonymize=args.anonymize)
+        print(json.dumps(result, indent=2))
+        return
+
+    # Image mode requires image argument
+    if not args.image:
+        parser.error("Image path is required (or use --text/--text-file for text PII analysis)")
 
     image_path = Path(args.image)
     if not image_path.exists():
         raise SystemExit(f"Error: File not found: {image_path}")
-
-    config_path = Path(args.config) if args.config else None
-    config = load_config(config_path)
 
     # Analyze-only mode: return JSON without modifying image
     if args.analyze_only:

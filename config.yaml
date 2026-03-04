@@ -39,10 +39,40 @@ violence_threshold: 0.70
 enable_hate_symbol_check: true
 hate_symbol_threshold: 0.75
 
-# Privacy features
+# Privacy features - Image
 enable_pii_redaction: true
 enable_face_blur: true
 face_blur_kernel_size: 51  # Must be odd number; larger = more blur
+
+# Privacy features - Text PII
+enable_text_pii: true
+pii_language: "en"
+pii_score_threshold: 0.5   # Minimum confidence score (0.0-1.0)
+
+# PII anonymization operator: replace, redact, mask, hash
+pii_operator: "replace"
+
+# Custom operator config per entity type (optional)
+# pii_operator_config:
+#   EMAIL:
+#     type: "replace"
+#     params: {"new_value": "[EMAIL_REDACTED]"}
+#   PHONE_NUMBER:
+#     type: "mask"
+#     params: {"masking_char": "*", "chars_to_mask": 8}
+#   PERSON:
+#     type: "replace"
+#     params: {"new_value": "<PERSON>"}
+
+# Entity types to detect (null = all)
+# pii_entity_types:
+#   - "EMAIL_ADDRESS"
+#   - "PHONE_NUMBER"
+#   - "PERSON"
+#   - "CREDIT_CARD"
+#   - "US_SSN"
+#   - "IP_ADDRESS"
+#   - "LOCATION"
 
 # Output settings
 output_quality: 95  # JPEG quality (1-100)

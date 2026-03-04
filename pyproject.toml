@@ -15,16 +15,25 @@ dependencies = [
     "tensorflow>=2.13.0",
     "opencv-python>=4.8.0",
     "presidio-analyzer>=2.2.0",
+    "presidio-anonymizer>=2.2.0",
     "presidio-image-redactor>=0.0.48",
     "pytesseract>=0.3.10",
     "imagehash>=4.3.0",
     "transformers>=4.35.0",
     "torch>=2.0.0",
+    "fastapi>=0.135.1",
+    "uvicorn[standard]>=0.41.0",
+    "python-multipart>=0.0.22",
 ]
 
 [project.optional-dependencies]
 demo = [
     "streamlit>=1.28.0",
+]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]
