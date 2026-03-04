@@ -417,6 +417,7 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
     # Safety categories for zero-shot classification
     safety_labels = [
         "a safe, normal photograph",
+        "a document, text, screenshot, form, receipt",
         "violence, gore, blood, injury, fighting",
         "weapons, guns, knives, dangerous objects",
         "disturbing, graphic, shocking content",
@@ -438,16 +439,17 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
 
         scores = {
             "safe": round(probs[0], 4),
-            "violence": round(probs[1], 4),
-            "weapons": round(probs[2], 4),
-            "disturbing": round(probs[3], 4),
+            "document": round(probs[1], 4),
+            "violence": round(probs[2], 4),
+            "weapons": round(probs[3], 4),
+            "disturbing": round(probs[4], 4),
         }
 
-        # Compute combined unsafe score
+        # Compute combined unsafe score (document is treated as safe)
         unsafe_score = scores["violence"] + scores["weapons"] + scores["disturbing"]
         is_safe = unsafe_score < config["violence_threshold"]
 
-        logger.info(f"Safety scores: safe={scores['safe']:.2f}, violence={scores['violence']:.2f}, weapons={scores['weapons']:.2f}")
+        logger.info(f"Safety scores: safe={scores['safe']:.2f}, document={scores['document']:.2f}, violence={scores['violence']:.2f}, weapons={scores['weapons']:.2f}")
 
         return is_safe, scores
 
@@ -829,6 +831,7 @@ def check_hate_symbols(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, flo
     # Using general descriptions to detect symbols/imagery
     hate_labels = [
         "a normal, safe photograph without any symbols",
+        "a document, text, screenshot, form, receipt",
         "hate symbols, extremist imagery, or offensive symbols",
         "nazi symbols, swastika, or white supremacist imagery",
         "confederate flag or racist symbols",
@@ -851,18 +854,19 @@ def check_hate_symbols(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, flo
 
         scores = {
             "safe": round(probs[0], 4),
-            "hate_symbols": round(probs[1], 4),
-            "nazi_symbols": round(probs[2], 4),
-            "racist_symbols": round(probs[3], 4),
+            "document": round(probs[1], 4),
+            "hate_symbols": round(probs[2], 4),
+            "nazi_symbols": round(probs[3], 4),
+            "racist_symbols": round(probs[4], 4),
         }
 
-        # Combined hate symbol score
+        # Combined hate symbol score (document is treated as safe)
         hate_score = scores["hate_symbols"] + scores["nazi_symbols"] + scores["racist_symbols"]
         is_safe = hate_score < threshold
 
         scores["combined_hate_score"] = round(hate_score, 4)
 
-        logger.info(f"Hate symbol scores: safe={scores['safe']:.2f}, combined_hate={hate_score:.2f}")
+        logger.info(f"Hate symbol scores: safe={scores['safe']:.2f}, document={scores['document']:.2f}, combined_hate={hate_score:.2f}")
 
         return is_safe, scores
 
@@ -1096,12 +1100,7 @@ def run_guardrails(
 
     result["resolution"] = res_info
 
-    # Step 4: Strip EXIF metadata
-    img = strip_exif(img)
-    result["checks"]["exif_stripped"] = True
-    logger.info("EXIF metadata stripped")
-
-    # Step 5: NSFW content check
+    # Step 4: NSFW content check
     is_safe, nsfw_score = check_nsfw(img, config)
     result["checks"]["nsfw"] = {"safe": is_safe, "score": round(nsfw_score, 4)}
 
@@ -1112,7 +1111,7 @@ def run_guardrails(
         log_decision(result, input_type="image")
         return result
 
-    # Step 6: Violence/Safety check (LAION-SAFETY style)
+    # Step 5: Violence/Safety check (LAION-SAFETY style)
     if config.get("enable_violence_check", True):
         is_safe, safety_scores = check_violence_safety(img, config)
         result["checks"]["safety"] = {
@@ -1130,7 +1129,7 @@ def run_guardrails(
             log_decision(result, input_type="image")
             return result
 
-    # Step 7: Hate symbol detection (CLIP-based)
+    # Step 6: Hate symbol detection (CLIP-based)
     if config.get("enable_hate_symbol_check", True):
         is_safe, hate_scores = check_hate_symbols(img, config)
         result["checks"]["hate_symbols"] = {
@@ -1147,27 +1146,58 @@ def run_guardrails(
             log_decision(result, input_type="image")
             return result
 
-    # Step 8: PII redaction (OCR + masking)
+    # Step 7: Strip EXIF metadata (after safety checks, before redaction)
+    img = strip_exif(img)
+    result["checks"]["exif_stripped"] = True
+    logger.info("EXIF metadata stripped")
+
+    # Step 8: Detect PII (before redaction to get count)
+    pii_count = 0
     if config["enable_pii_redaction"]:
+        pii_result = detect_pii(img, config)
+        pii_count = pii_result.get("entity_count", 0)
+        result["checks"]["pii_detection"] = {"count": pii_count}
+
+    # Step 9: Detect faces (before blur to get count)
+    face_count = 0
+    if config["enable_face_blur"]:
+        face_result = detect_faces(img, config)
+        face_count = face_result.get("face_count", 0)
+        result["checks"]["face_detection"] = {"count": face_count}
+
+    # Step 10: Determine if redaction is needed
+    needs_redaction = (pii_count > 0) or (face_count > 0)
+
+    # Step 11: Apply redactions if needed
+    if config["enable_pii_redaction"] and pii_count > 0:
         img = redact_pii(img, config)
         result["checks"]["pii_redaction"] = True
 
-    # Step 9: Face blur for anonymization
-    if config["enable_face_blur"]:
+    if config["enable_face_blur"] and face_count > 0:
         img = blur_faces(img, config)
         result["checks"]["face_blur"] = True
 
-    # Step 10: Compute perceptual hash (for known-bad matching)
+    # Step 12: Compute perceptual hash (for known-bad matching)
     phash = compute_perceptual_hash(img)
     result["perceptual_hash"] = phash
     result["checks"]["phash_computed"] = True
 
-    # Step 11: Save sanitized output to organized folder structure
+    # Step 13: Determine final decision (ALLOW or REDACT)
+    if needs_redaction:
+        result["decision"] = "REDACT"
+        result["is_redacted"] = True
+        result["reasons"].append(f"PII redacted: {pii_count}, Faces blurred: {face_count}")
+    else:
+        result["decision"] = "ALLOW"
+        result["is_redacted"] = False
+        result["reasons"].append("All checks passed, no redaction needed")
+
+    # Step 14: Save sanitized output to organized folder structure
     if output_dir is None:
         output_dir = image_path.parent / "output"
 
-    # Create decision-based subfolder (allowed/rejected)
-    decision_folder = output_dir / "allowed"
+    # Create decision-based subfolder (allowed/redacted)
+    decision_folder = output_dir / result["decision"].lower()
     decision_folder.mkdir(parents=True, exist_ok=True)
 
     # Use UUID for unbiased filename (already generated at start)
@@ -1175,8 +1205,7 @@ def run_guardrails(
     img.save(output_path, format="JPEG", quality=config["output_quality"])
     result["output_path"] = str(output_path)
 
-    logger.info(f"ALLOW: Sanitized image saved to {output_path}")
-    result["reasons"].append("All checks passed")
+    logger.info(f"{result['decision']}: Image saved to {output_path}")
 
     # Log decision to audit file
     log_decision(result, input_type="image")
@@ -1312,8 +1341,10 @@ def main():
         print(f"  DECISION: {decision}")
         print(f"{'='*50}")
 
-        # Show rejection reason if rejected
+        # Show reason based on decision
         if decision == "REJECT" and result.get('reasons'):
+            print(f"\n  Reason: {result['reasons'][0]}")
+        elif decision == "REDACT" and result.get('reasons'):
             print(f"\n  Reason: {result['reasons'][0]}")
 
         # Safety scores summary (only if checks were performed)
@@ -1340,12 +1371,22 @@ def main():
                 hate_status = "SAFE" if checks['hate_symbols']['safe'] else "UNSAFE"
                 print(f"    Hate Score:   {hate_scores.get('combined_hate_score', 0):.4f} ({hate_status})")
 
+        # Redaction info (for ALLOW and REDACT)
+        if decision in ["ALLOW", "REDACT"]:
+            print(f"\n  Redaction:")
+            pii_count = checks.get('pii_detection', {}).get('count', 0)
+            face_count = checks.get('face_detection', {}).get('count', 0)
+            print(f"    PII Found:    {pii_count}")
+            print(f"    Faces Found:  {face_count}")
+            print(f"    Is Redacted:  {result.get('is_redacted', False)}")
+
         # Output info (only show if image was saved)
         if result.get('output_path'):
             print(f"\n  Output:")
-            print(f"    Image: {result['output_path']}")
+            print(f"    Folder: {result['decision'].lower()}/")
+            print(f"    Image:  {result['output_path']}")
             if result.get('output_id'):
-                print(f"    ID:    {result['output_id']}")
+                print(f"    ID:     {result['output_id']}")
 
         print(f"{'='*50}\n")
 

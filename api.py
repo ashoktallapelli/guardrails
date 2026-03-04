@@ -1,28 +1,25 @@
 """
 api.py - FastAPI REST API for Image Guardrails
 
-Provides REST endpoints for image validation, sanitization, and text PII detection.
-Reuses all functions from image_guard.py for consistency with CLI.
+Aligned with AIForce Security Guardrails Service standard.
 
 Usage:
     uvicorn api:app --reload --port 8000
 
 Endpoints:
-    POST /analyze/image     - Analyze image without modification
-    POST /process/image     - Full pipeline with sanitization
-    POST /analyze/text      - Detect PII in text
-    POST /anonymize/text    - Anonymize PII in text
-    GET  /health            - Health check and model status
+    POST /scan/image        - Scan image for safety (analyze + optional sanitization)
+    POST /scan/text         - Scan text for PII (analyze + optional anonymization)
+    GET  /check_health      - Health check
     GET  /config            - View current configuration
 """
 
+import base64
 import io
 import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -32,7 +29,6 @@ from PIL import Image
 # Import functions from image_guard.py
 from image_guard import (
     load_config,
-    sha256_file,
     validate_resolution,
     strip_exif,
     check_nsfw,
@@ -60,35 +56,43 @@ _config: Dict[str, Any] = {}
 
 
 # ============================================================
-# Pydantic Models
+# Pydantic Models - Aligned with SGS Standard
 # ============================================================
 
-class TextRequest(BaseModel):
-    """Request body for text PII analysis."""
-    text: str = Field(..., min_length=1, description="Text to analyze for PII")
+class MetricResponseOutput(BaseModel):
+    """Standard scanner result format."""
+    score: float
+    threshold: float
+    is_pass: bool
+    is_error: bool = False
 
 
-class TextResponse(BaseModel):
-    """Response for text PII analysis."""
-    input_type: str = "text"
-    timestamp: str
-    original_length: int
-    pii: Dict[str, Any]
-    anonymized: bool
-    output_text: Optional[str] = None
-
-
-class ImageAnalysisResponse(BaseModel):
-    """Response for image analysis."""
-    input_filename: str
-    timestamp: str
-    decision: str
+class ScanImageResponse(BaseModel):
+    """Response for /scan/image endpoint."""
+    decision: str  # ALLOW, REDACT, or REJECT
     is_safe: bool
-    results: Dict[str, Any]
-    meta: Dict[str, Any]
+    results: Dict[str, MetricResponseOutput]
+    is_redacted: bool = False
+    sanitized_image_base64: Optional[str] = None
+    meta: Dict[str, Any] = {}
 
 
-class HealthResponse(BaseModel):
+class TextScanRequest(BaseModel):
+    """Request body for /scan/text endpoint."""
+    input_text: str = Field(..., min_length=1, description="Text to scan for PII")
+
+
+class TextScanResponse(BaseModel):
+    """Response for /scan/text endpoint."""
+    decision: str  # ALLOW or REDACT
+    is_safe: bool
+    results: Dict[str, MetricResponseOutput]
+    is_redacted: bool = False
+    sanitized_text: Optional[str] = None
+    entities: list = []
+
+
+class HealthCheckResponse(BaseModel):
     """Health check response."""
     status: str
     timestamp: str
@@ -108,7 +112,6 @@ class ConfigResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    # Startup: Load config and optionally preload models
     global _config
     try:
         _config = load_config()
@@ -117,38 +120,9 @@ async def lifespan(app: FastAPI):
         logger.error(f"Config file not found: {e}")
         raise
 
-    # Optionally preload models (uncomment to enable)
-    # await preload_models()
-
     yield
 
-    # Shutdown: Cleanup
     logger.info("Shutting down API server")
-
-
-async def preload_models():
-    """Preload ML models for faster first request."""
-    logger.info("Preloading models...")
-
-    # Create a small test image
-    test_img = Image.new('RGB', (100, 100), color='white')
-
-    # Trigger model loading
-    if _config.get("enable_violence_check", True):
-        try:
-            check_violence_safety(test_img, _config)
-            logger.info("CLIP model preloaded")
-        except Exception as e:
-            logger.warning(f"Could not preload CLIP: {e}")
-
-    if _config.get("nsfw_model") == "adamcodd":
-        try:
-            check_nsfw(test_img, _config)
-            logger.info("AdamCodd NSFW model preloaded")
-        except Exception as e:
-            logger.warning(f"Could not preload AdamCodd: {e}")
-
-    logger.info("Model preloading complete")
 
 
 # ============================================================
@@ -157,7 +131,7 @@ async def preload_models():
 
 app = FastAPI(
     title="Image Guardrails API",
-    description="REST API for image validation, sanitization, and PII detection",
+    description="REST API for image and text safety scanning - Aligned with SGS standard",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -167,18 +141,18 @@ app = FastAPI(
 # Helper Functions
 # ============================================================
 
-def validate_file_type_bytes(file_bytes: bytes, filename: str) -> tuple[bool, str]:
+def validate_file_type_bytes(file_bytes: bytes) -> tuple[bool, str]:
     """Validate file type from bytes using magic."""
     try:
         import magic
     except ImportError:
-        return True, "unknown (magic not available)"
+        return True, "unknown"
 
     max_bytes = _config.get("max_file_size_mb", 10) * 1024 * 1024
     size = len(file_bytes)
 
     if size > max_bytes:
-        return False, f"File too large: {size / (1024*1024):.2f} MB > {_config['max_file_size_mb']} MB limit"
+        return False, f"File too large: {size / (1024*1024):.2f} MB"
 
     if size == 0:
         return False, "File is empty"
@@ -187,7 +161,7 @@ def validate_file_type_bytes(file_bytes: bytes, filename: str) -> tuple[bool, st
     allowed = _config.get("allowed_mime_types", ["image/jpeg", "image/png", "image/webp", "image/gif"])
 
     if mime not in allowed:
-        return False, f"Disallowed MIME type: {mime}. Allowed: {allowed}"
+        return False, f"Disallowed MIME type: {mime}"
 
     return True, mime
 
@@ -200,21 +174,17 @@ def compute_hash_bytes(file_bytes: bytes) -> str:
 
 async def process_uploaded_image(file: UploadFile) -> tuple[bytes, Image.Image]:
     """Read and validate uploaded image file."""
-    # Read file bytes
     file_bytes = await file.read()
 
-    # Validate file type
-    valid, mime_info = validate_file_type_bytes(file_bytes, file.filename or "unknown")
+    valid, mime_info = validate_file_type_bytes(file_bytes)
     if not valid:
         raise HTTPException(status_code=400, detail=mime_info)
 
-    # Open image
     try:
         img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to open image: {e}")
 
-    # Validate resolution
     valid, res_info = validate_resolution(img, _config)
     if not valid:
         raise HTTPException(status_code=400, detail=res_info)
@@ -223,25 +193,23 @@ async def process_uploaded_image(file: UploadFile) -> tuple[bytes, Image.Image]:
 
 
 # ============================================================
-# Endpoints
+# Endpoints - Aligned with /scan/* pattern
 # ============================================================
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
-async def health_check():
+@app.get("/check_health", response_model=HealthCheckResponse, tags=["Health"])
+async def check_health():
     """
     Health check endpoint.
     Returns status and loaded model information.
     """
     models_loaded = {
         "clip": "clip_model" in _model_cache,
-        "nsfw_opennsfw2": "nsfw_opennsfw2_model" in _model_cache,
         "nsfw_adamcodd": "nsfw_adamcodd_model" in _model_cache,
         "text_analyzer": "text_analyzer" in _model_cache,
-        "text_anonymizer": "text_anonymizer" in _model_cache,
     }
 
-    return HealthResponse(
-        status="healthy",
+    return HealthCheckResponse(
+        status="OK",
         timestamp=datetime.now(timezone.utc).isoformat(),
         models_loaded=models_loaded,
         config_loaded=bool(_config),
@@ -250,123 +218,29 @@ async def health_check():
 
 @app.get("/config", response_model=ConfigResponse, tags=["Configuration"])
 async def get_config():
-    """
-    Get current configuration.
-    Returns sanitized config (excluding sensitive values).
-    """
-    # Return config without sensitive values
+    """Get current configuration (excluding sensitive values)."""
     safe_config = {k: v for k, v in _config.items() if k != "environment"}
     return ConfigResponse(config=safe_config)
 
 
-@app.post("/analyze/image", response_model=ImageAnalysisResponse, tags=["Image"])
-async def analyze_image_endpoint(file: UploadFile = File(..., description="Image file to analyze")):
-    """
-    Analyze image without modification.
-
-    Returns comprehensive analysis including:
-    - File validation results
-    - NSFW detection score
-    - Violence/weapons detection scores
-    - Hate symbol detection scores
-    - PII detection (text in image)
-    - Face detection count
-    """
-    t0 = time.time()
-
-    # Process uploaded file
-    file_bytes, img = await process_uploaded_image(file)
-
-    # Compute hash
-    file_hash = compute_hash_bytes(file_bytes)
-
-    # Initialize result
-    result = {
-        "input_filename": file.filename or "unknown",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "decision": "ALLOW",
-        "is_safe": True,
-        "results": {},
-        "meta": {
-            "sha256": file_hash,
-            "file_size_bytes": len(file_bytes),
-        }
-    }
-
-    width, height = img.size
-    result["results"]["resolution"] = {
-        "valid": True,
-        "width": width,
-        "height": height,
-    }
-
-    # NSFW check
-    is_safe, nsfw_score = check_nsfw(img, _config)
-    result["results"]["nsfw"] = {
-        "safe": is_safe,
-        "score": round(nsfw_score, 4),
-        "threshold": _config.get("nsfw_threshold", 0.8),
-    }
-    if not is_safe:
-        result["decision"] = "REJECT"
-        result["is_safe"] = False
-
-    # Violence check
-    if _config.get("enable_violence_check", True):
-        violence_safe, safety_scores = check_violence_safety(img, _config)
-        result["results"]["violence"] = {
-            "safe": violence_safe,
-            "scores": safety_scores,
-            "threshold": _config.get("violence_threshold", 0.7),
-        }
-        if not violence_safe:
-            result["decision"] = "REJECT"
-            result["is_safe"] = False
-
-    # Hate symbol check
-    if _config.get("enable_hate_symbol_check", True):
-        hate_safe, hate_scores = check_hate_symbols(img, _config)
-        result["results"]["hate_symbols"] = {
-            "safe": hate_safe,
-            "scores": hate_scores,
-            "threshold": _config.get("hate_symbol_threshold", 0.75),
-        }
-        if not hate_safe:
-            result["decision"] = "REJECT"
-            result["is_safe"] = False
-
-    # PII detection
-    if _config.get("enable_pii_redaction", True):
-        pii_result = detect_pii(img, _config)
-        result["results"]["pii"] = pii_result
-
-    # Face detection
-    if _config.get("enable_face_blur", True):
-        face_result = detect_faces(img, _config)
-        result["results"]["faces"] = face_result
-
-    # Perceptual hash
-    phash = compute_perceptual_hash(img)
-    result["meta"]["perceptual_hash"] = phash
-    result["meta"]["processing_ms"] = int((time.time() - t0) * 1000)
-
-    return ImageAnalysisResponse(**result)
-
-
-@app.post("/process/image", tags=["Image"])
-async def process_image_endpoint(
-    file: UploadFile = File(..., description="Image file to process"),
-    return_image: bool = True,
+@app.post("/scan/image", response_model=ScanImageResponse, tags=["Scan"])
+async def scan_image(
+    file: UploadFile = File(..., description="Image file to scan"),
 ):
     """
-    Full guardrails pipeline with sanitization.
+    Scan image for safety violations.
 
-    Applies:
-    - EXIF stripping
-    - PII redaction
-    - Face blurring
+    Decisions:
+    - REJECT: Unsafe content (NSFW, violence, hate symbols) - no image returned
+    - REDACT: Safe but PII/faces found - sanitized image returned
+    - ALLOW: Safe and clean - original image returned (EXIF stripped only)
 
-    Returns sanitized image as JPEG or JSON with base64 image.
+    Checks:
+    - NSFW content
+    - Violence/weapons
+    - Hate symbols
+    - PII in image (OCR)
+    - Faces detected
     """
     t0 = time.time()
 
@@ -374,128 +248,188 @@ async def process_image_endpoint(
     file_bytes, img = await process_uploaded_image(file)
     file_hash = compute_hash_bytes(file_bytes)
 
-    result = {
-        "input_filename": file.filename or "unknown",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "decision": "ALLOW",
-        "is_safe": True,
-        "sha256": file_hash,
-        "checks": {},
-    }
+    results: Dict[str, MetricResponseOutput] = {}
+    is_safe = True
 
     # NSFW check
-    is_safe, nsfw_score = check_nsfw(img, _config)
-    result["checks"]["nsfw"] = {"safe": is_safe, "score": round(nsfw_score, 4)}
-    if not is_safe:
-        raise HTTPException(
-            status_code=422,
-            detail=f"NSFW content detected (score: {nsfw_score:.2f})"
-        )
+    nsfw_safe, nsfw_score = check_nsfw(img, _config)
+    nsfw_threshold = _config.get("nsfw_threshold", 0.8)
+    results["nsfw"] = MetricResponseOutput(
+        score=round(nsfw_score, 4),
+        threshold=nsfw_threshold,
+        is_pass=nsfw_safe,
+        is_error=False
+    )
+    if not nsfw_safe:
+        is_safe = False
 
     # Violence check
     if _config.get("enable_violence_check", True):
         violence_safe, safety_scores = check_violence_safety(img, _config)
-        result["checks"]["violence"] = {"safe": violence_safe, "scores": safety_scores}
+        violence_threshold = _config.get("violence_threshold", 0.7)
+        combined_score = (
+            safety_scores.get("violence", 0) +
+            safety_scores.get("weapons", 0) +
+            safety_scores.get("disturbing", 0)
+        )
+        results["violence"] = MetricResponseOutput(
+            score=round(combined_score, 4),
+            threshold=violence_threshold,
+            is_pass=violence_safe,
+            is_error=False
+        )
         if not violence_safe:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Unsafe content detected: {safety_scores}"
-            )
+            is_safe = False
 
-    # Hate symbol check
+    # Hate symbols check
     if _config.get("enable_hate_symbol_check", True):
         hate_safe, hate_scores = check_hate_symbols(img, _config)
-        result["checks"]["hate_symbols"] = {"safe": hate_safe, "scores": hate_scores}
+        hate_threshold = _config.get("hate_symbol_threshold", 0.75)
+        combined_hate = hate_scores.get("combined_hate_score", 0)
+        results["hate_symbols"] = MetricResponseOutput(
+            score=round(combined_hate, 4),
+            threshold=hate_threshold,
+            is_pass=hate_safe,
+            is_error=False
+        )
         if not hate_safe:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Hate symbols detected: {hate_scores}"
-            )
+            is_safe = False
 
-    # Strip EXIF
-    img = strip_exif(img)
-    result["checks"]["exif_stripped"] = True
-
-    # PII redaction
+    # PII detection
+    pii_count = 0
     if _config.get("enable_pii_redaction", True):
-        img = redact_pii(img, _config)
-        result["checks"]["pii_redacted"] = True
-
-    # Face blur
-    if _config.get("enable_face_blur", True):
-        img = blur_faces(img, _config)
-        result["checks"]["faces_blurred"] = True
-
-    # Compute perceptual hash
-    phash = compute_perceptual_hash(img)
-    result["perceptual_hash"] = phash
-    result["processing_ms"] = int((time.time() - t0) * 1000)
-
-    # Return sanitized image
-    if return_image:
-        buf = io.BytesIO()
-        quality = _config.get("output_quality", 95)
-        img.save(buf, format="JPEG", quality=quality)
-        buf.seek(0)
-
-        return StreamingResponse(
-            buf,
-            media_type="image/jpeg",
-            headers={
-                "X-Guardrails-Decision": result["decision"],
-                "X-Guardrails-SHA256": file_hash,
-                "X-Guardrails-Perceptual-Hash": phash,
-                "X-Guardrails-Processing-Ms": str(result["processing_ms"]),
-            }
+        pii_result = detect_pii(img, _config)
+        pii_count = pii_result.get("entity_count", 0)
+        results["pii"] = MetricResponseOutput(
+            score=float(pii_count),
+            threshold=0,
+            is_pass=True,
+            is_error=False
         )
 
-    # Return JSON with base64 image
-    import base64
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=_config.get("output_quality", 95))
-    result["sanitized_image_base64"] = base64.b64encode(buf.getvalue()).decode()
+    # Face detection
+    face_count = 0
+    if _config.get("enable_face_blur", True):
+        face_result = detect_faces(img, _config)
+        face_count = face_result.get("face_count", 0)
+        results["faces"] = MetricResponseOutput(
+            score=float(face_count),
+            threshold=0,
+            is_pass=True,
+            is_error=False
+        )
 
-    return JSONResponse(content=result)
+    # Determine decision
+    sanitized_image_base64 = None
+    is_redacted = False
 
+    if not is_safe:
+        # REJECT - unsafe content, no image returned
+        decision = "REJECT"
+    else:
+        # Safe - check if redaction needed
+        needs_redaction = (pii_count > 0) or (face_count > 0)
 
-@app.post("/analyze/text", response_model=TextResponse, tags=["Text PII"])
-async def analyze_text_endpoint(request: TextRequest):
-    """
-    Detect PII in text without modification.
+        # Always strip EXIF
+        img = strip_exif(img)
 
-    Returns list of detected entities with:
-    - Entity type (PERSON, EMAIL_ADDRESS, etc.)
-    - Original text
-    - Confidence score
-    - Character positions
-    """
-    pii_result = detect_text_pii(request.text, _config)
+        if needs_redaction:
+            # REDACT - apply PII redaction and face blur
+            decision = "REDACT"
+            is_redacted = True
 
-    return TextResponse(
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        original_length=len(request.text),
-        pii=pii_result,
-        anonymized=False,
+            if _config.get("enable_pii_redaction", True) and pii_count > 0:
+                img = redact_pii(img, _config)
+
+            if _config.get("enable_face_blur", True) and face_count > 0:
+                img = blur_faces(img, _config)
+        else:
+            # ALLOW - clean image, just EXIF stripped
+            decision = "ALLOW"
+
+        # Return image as base64
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=_config.get("output_quality", 95))
+        sanitized_image_base64 = base64.b64encode(buf.getvalue()).decode()
+
+    # Build response
+    phash = compute_perceptual_hash(img)
+    processing_ms = int((time.time() - t0) * 1000)
+
+    return ScanImageResponse(
+        decision=decision,
+        is_safe=is_safe,
+        results=results,
+        is_redacted=is_redacted,
+        sanitized_image_base64=sanitized_image_base64,
+        meta={
+            "sha256": file_hash,
+            "perceptual_hash": phash,
+            "processing_ms": processing_ms,
+            "filename": file.filename or "unknown",
+        }
     )
 
 
-@app.post("/anonymize/text", response_model=TextResponse, tags=["Text PII"])
-async def anonymize_text_endpoint(request: TextRequest):
+@app.post("/scan/text", response_model=TextScanResponse, tags=["Scan"])
+async def scan_text(request: TextScanRequest):
     """
-    Detect and anonymize PII in text.
+    Scan text for PII and automatically anonymize.
 
-    Replaces detected PII with type labels (e.g., <PERSON>, <EMAIL_ADDRESS>).
-    Operator can be configured in config.yaml (replace, redact, mask, hash).
+    Decisions:
+    - REDACT: PII found and anonymized
+    - ALLOW: No PII found, text unchanged
+
+    Detects and anonymizes:
+    - Names (PERSON)
+    - Email addresses
+    - Phone numbers
+    - Credit cards
+    - SSN
+    - Other PII entities
     """
-    pii_result = anonymize_text_pii(request.text, _config)
+    # Always run anonymization (will return original if no PII)
+    pii_result = anonymize_text_pii(request.input_text, _config)
+    sanitized_text = pii_result.get("anonymized_text")
+    entities = pii_result.get("entities", [])
 
-    return TextResponse(
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        original_length=len(request.text),
-        pii=pii_result,
-        anonymized=True,
-        output_text=pii_result.get("anonymized_text"),
+    pii_count = len(entities)
+    pii_threshold = _config.get("pii_score_threshold", 0.35)
+
+    # Determine decision based on PII found
+    if pii_count > 0:
+        decision = "REDACT"
+        is_redacted = True
+    else:
+        decision = "ALLOW"
+        is_redacted = False
+
+    results: Dict[str, MetricResponseOutput] = {}
+    results["pii"] = MetricResponseOutput(
+        score=float(pii_count),
+        threshold=pii_threshold,
+        is_pass=True,
+        is_error=False
     )
+
+    return TextScanResponse(
+        decision=decision,
+        is_safe=True,
+        results=results,
+        is_redacted=is_redacted,
+        sanitized_text=sanitized_text,
+        entities=entities,
+    )
+
+
+# ============================================================
+# Legacy endpoints (for backward compatibility)
+# ============================================================
+
+@app.get("/health", include_in_schema=False)
+async def health_legacy():
+    """Legacy health endpoint - redirects to /check_health."""
+    return await check_health()
 
 
 # ============================================================
