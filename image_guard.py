@@ -709,10 +709,12 @@ def detect_faces(img, config: Dict[str, Any]) -> Dict[str, Any]:
         return {"enabled": True, "error": str(e)}
 
 
-def redact_pii(img):
+def redact_pii(img, config: Dict[str, Any]):
     """
     Use Presidio Image Redactor to detect and mask PII in images.
     Handles screenshots, IDs, documents with sensitive text.
+
+    Uses pii_score_threshold from config for consistent detection.
     """
     try:
         from presidio_image_redactor import ImageRedactorEngine
@@ -722,8 +724,9 @@ def redact_pii(img):
 
     try:
         engine = ImageRedactorEngine()
-        redacted = engine.redact(img)
-        logger.info("PII redaction completed")
+        score_threshold = config.get("pii_score_threshold", 0.35)
+        redacted = engine.redact(img, score_threshold=score_threshold)
+        logger.info(f"PII redaction completed (threshold: {score_threshold})")
         return redacted
     except Exception as e:
         logger.warning(f"PII redaction failed: {e}")
@@ -1141,7 +1144,7 @@ def run_guardrails(
 
     # Step 8: PII redaction (OCR + masking)
     if config["enable_pii_redaction"]:
-        img = redact_pii(img)
+        img = redact_pii(img, config)
         result["checks"]["pii_redaction"] = True
 
     # Step 9: Face blur for anonymization
