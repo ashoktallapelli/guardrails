@@ -70,6 +70,7 @@ class MetricResponseOutput(BaseModel):
 class ScanImageResponse(BaseModel):
     """Response for /scan/image endpoint."""
     decision: str  # ALLOW, REDACT, or REJECT
+    reason: str  # Human-readable reason for the decision
     is_safe: bool
     results: Dict[str, MetricResponseOutput]
     is_redacted: bool = False
@@ -85,6 +86,7 @@ class TextScanRequest(BaseModel):
 class TextScanResponse(BaseModel):
     """Response for /scan/text endpoint."""
     decision: str  # ALLOW or REDACT
+    reason: str  # Human-readable reason for the decision
     is_safe: bool
     results: Dict[str, MetricResponseOutput]
     is_redacted: bool = False
@@ -264,9 +266,11 @@ async def scan_image(
         is_safe = False
 
     # Violence check
+    safety_scores = {}
+    violence_safe = True
+    violence_threshold = _config.get("violence_threshold", 0.7)
     if _config.get("enable_violence_check", True):
         violence_safe, safety_scores = check_violence_safety(img, _config)
-        violence_threshold = _config.get("violence_threshold", 0.7)
         combined_score = (
             safety_scores.get("violence", 0) +
             safety_scores.get("weapons", 0) +
@@ -282,9 +286,11 @@ async def scan_image(
             is_safe = False
 
     # Hate symbols check
+    hate_scores = {}
+    hate_safe = True
+    hate_threshold = _config.get("hate_symbol_threshold", 0.75)
     if _config.get("enable_hate_symbol_check", True):
         hate_safe, hate_scores = check_hate_symbols(img, _config)
-        hate_threshold = _config.get("hate_symbol_threshold", 0.75)
         combined_hate = hate_scores.get("combined_hate_score", 0)
         results["hate_symbols"] = MetricResponseOutput(
             score=round(combined_hate, 4),
@@ -319,13 +325,23 @@ async def scan_image(
             is_error=False
         )
 
-    # Determine decision
+    # Determine decision and reason (aligned with image_guard.py)
     sanitized_image_base64 = None
     is_redacted = False
+    reason = ""
 
     if not is_safe:
         # REJECT - unsafe content, no image returned
         decision = "REJECT"
+        # Build reason from failed checks (matching image_guard.py format)
+        if not nsfw_safe:
+            reason = f"NSFW score {nsfw_score:.2f} >= threshold {nsfw_threshold}"
+        elif not violence_safe:
+            reason = f"Unsafe content detected: violence={safety_scores.get('violence', 0):.2f}, weapons={safety_scores.get('weapons', 0):.2f}"
+        elif not hate_safe:
+            reason = f"Hate symbols detected: combined_score={hate_scores.get('combined_hate_score', 0):.2f}"
+        else:
+            reason = "Unsafe content detected"
     else:
         # Safe - check if redaction needed
         needs_redaction = (pii_count > 0) or (face_count > 0)
@@ -337,6 +353,7 @@ async def scan_image(
             # REDACT - apply PII redaction and face blur
             decision = "REDACT"
             is_redacted = True
+            reason = f"PII redacted: {pii_count}, Faces blurred: {face_count}"
 
             if _config.get("enable_pii_redaction", True) and pii_count > 0:
                 img = redact_pii(img, _config)
@@ -346,6 +363,7 @@ async def scan_image(
         else:
             # ALLOW - clean image, just EXIF stripped
             decision = "ALLOW"
+            reason = "All checks passed, no redaction needed"
 
         # Return image as base64
         buf = io.BytesIO()
@@ -358,6 +376,7 @@ async def scan_image(
 
     return ScanImageResponse(
         decision=decision,
+        reason=reason,
         is_safe=is_safe,
         results=results,
         is_redacted=is_redacted,
@@ -400,9 +419,13 @@ async def scan_text(request: TextScanRequest):
     if pii_count > 0:
         decision = "REDACT"
         is_redacted = True
+        # Build reason with entity types found
+        entity_types = list(set(e.get("type", "UNKNOWN") for e in entities))
+        reason = f"PII anonymized: {pii_count} entities ({', '.join(entity_types)})"
     else:
         decision = "ALLOW"
         is_redacted = False
+        reason = "No PII detected"
 
     results: Dict[str, MetricResponseOutput] = {}
     results["pii"] = MetricResponseOutput(
@@ -414,6 +437,7 @@ async def scan_text(request: TextScanRequest):
 
     return TextScanResponse(
         decision=decision,
+        reason=reason,
         is_safe=True,
         results=results,
         is_redacted=is_redacted,
