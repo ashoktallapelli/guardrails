@@ -337,7 +337,7 @@ async def analyze_image_endpoint(file: UploadFile = File(..., description="Image
 
     # PII detection
     if _config.get("enable_pii_redaction", True):
-        pii_result = detect_pii(img)
+        pii_result = detect_pii(img, _config)
         result["results"]["pii"] = pii_result
 
     # Face detection
@@ -413,12 +413,12 @@ async def process_image_endpoint(
             )
 
     # Strip EXIF
-    _ = strip_exif(img)
+    img = strip_exif(img)
     result["checks"]["exif_stripped"] = True
 
     # PII redaction
     if _config.get("enable_pii_redaction", True):
-        img = redact_pii(img)
+        img = redact_pii(img, _config)
         result["checks"]["pii_redacted"] = True
 
     # Face blur

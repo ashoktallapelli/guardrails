@@ -250,15 +250,16 @@ def validate_resolution(img, config: Dict[str, Any]) -> Tuple[bool, str]:
     return True, f"{width}x{height}"
 
 
-def strip_exif(img) -> bytes:
+def strip_exif(img):
     """
     Strip EXIF metadata by re-encoding the image.
-    Returns clean image bytes without GPS, device IDs, etc.
+    Returns a new PIL Image without GPS, device IDs, etc.
     """
+    from PIL import Image
     buf = io.BytesIO()
-    # Save without exif parameter to strip metadata
     img.save(buf, format="JPEG", quality=95, exif=b"")
-    return buf.getvalue()
+    buf.seek(0)
+    return Image.open(buf).convert("RGB")
 
 
 def check_nsfw_opennsfw2(img, config: Dict[str, Any]) -> Tuple[bool, float]:
@@ -455,7 +456,7 @@ def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, 
         return True, {"violence": 0.0, "weapons": 0.0, "safe": 1.0, "error": str(e)}
 
 
-def detect_pii(img) -> Dict[str, Any]:
+def detect_pii(img, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Detect PII in images using OCR + Presidio Analyzer.
     Returns detection results WITHOUT modifying the image.
@@ -481,8 +482,12 @@ def detect_pii(img) -> Dict[str, Any]:
             }
 
         # Analyze text for PII
-        analyzer = AnalyzerEngine()
-        results = analyzer.analyze(text=extracted_text, language="en")
+        if "text_analyzer" not in _model_cache:
+            _model_cache["text_analyzer"] = AnalyzerEngine()
+        analyzer = _model_cache["text_analyzer"]
+        language = config.get("pii_language", "en")
+        score_threshold = config.get("pii_score_threshold", 0.35)
+        results = analyzer.analyze(text=extracted_text, language=language, score_threshold=score_threshold)
 
         entities = []
         for result in results:
@@ -532,7 +537,7 @@ def detect_text_pii(text: str, config: Dict[str, Any]) -> Dict[str, Any]:
         # Get configured entity types or use defaults
         entity_types = config.get("pii_entity_types", None)
         language = config.get("pii_language", "en")
-        score_threshold = config.get("pii_score_threshold", 0.5)
+        score_threshold = config.get("pii_score_threshold", 0.35)
 
         # Initialize analyzer (cached)
         if "text_analyzer" not in _model_cache:
@@ -598,7 +603,7 @@ def anonymize_text_pii(text: str, config: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Get configuration
         language = config.get("pii_language", "en")
-        score_threshold = config.get("pii_score_threshold", 0.5)
+        score_threshold = config.get("pii_score_threshold", 0.35)
         default_operator = config.get("pii_operator", "replace")
         operator_config = config.get("pii_operator_config", {})
 
@@ -983,7 +988,7 @@ def analyze_image(
 
     # Step 7: PII detection (without redaction)
     if config.get("enable_pii_redaction", True):
-        pii_result = detect_pii(img)
+        pii_result = detect_pii(img, config)
         result["results"]["pii"] = pii_result
 
     # Step 8: Face detection (without blur)
@@ -1092,7 +1097,7 @@ def run_guardrails(
     result["resolution"] = res_info
 
     # Step 4: Strip EXIF metadata
-    _ = strip_exif(img)  # Could persist if needed
+    img = strip_exif(img)
     result["checks"]["exif_stripped"] = True
     logger.info("EXIF metadata stripped")
 
