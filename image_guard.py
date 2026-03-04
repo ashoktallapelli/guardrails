@@ -286,6 +286,7 @@ def check_nsfw_opennsfw2(img, config: Dict[str, Any]) -> Tuple[bool, float]:
     try:
         score = float(n2.predict_image(img, weights_path=str(weights_path)))
         is_safe = score < config["nsfw_threshold"]
+        logger.info(f"NSFW score: {score:.4f} (threshold: {config['nsfw_threshold']})")
         return is_safe, score
     except Exception as e:
         logger.warning(f"NSFW check failed: {e}")
