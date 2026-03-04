@@ -90,6 +90,7 @@ uv run python image_guard.py image.jpg --analyze-only
 
 Detect and optionally anonymize PII in text:
 
+**macOS/Linux:**
 ```bash
 # Detect PII in text (direct input)
 uv run python image_guard.py --text "My email is john@example.com"
@@ -102,6 +103,27 @@ uv run python image_guard.py --text "Contact: John Smith, john@example.com" --an
 
 # Anonymize PII from file
 uv run python image_guard.py --text-file sensitive.txt --anonymize
+```
+
+**Windows CMD:**
+```cmd
+REM Detect PII in text
+uv run python image_guard.py --text "My email is john@example.com"
+
+REM Detect PII from file
+uv run python image_guard.py --text-file document.txt
+
+REM Anonymize PII in text
+uv run python image_guard.py --text "Contact: John Smith, john@example.com" --anonymize
+```
+
+**Windows PowerShell:**
+```powershell
+# Detect PII in text
+uv run python image_guard.py --text "My email is john@example.com"
+
+# Anonymize PII in text
+uv run python image_guard.py --text "Contact: John Smith, john@example.com" --anonymize
 ```
 
 ---
@@ -524,10 +546,18 @@ python -c "from transformers import CLIPModel; CLIPModel.from_pretrained('openai
 **Error:** `NSFW weights not found at ~/.opennsfw2/weights/open_nsfw_weights.h5`
 
 **Solution:** Download weights manually:
+
+**macOS/Linux:**
 ```bash
 mkdir -p ~/.opennsfw2/weights
 curl -L https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_weights.h5 \
   -o ~/.opennsfw2/weights/open_nsfw_weights.h5
+```
+
+**Windows (PowerShell):**
+```powershell
+mkdir "$env:USERPROFILE\.opennsfw2\weights" -Force
+Invoke-WebRequest -Uri "https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_weights.h5" -OutFile "$env:USERPROFILE\.opennsfw2\weights\open_nsfw_weights.h5"
 ```
 
 ### Resolution Too Large
@@ -621,12 +651,22 @@ A REST API that exposes the same functionality as the CLI.
 
 ### Start Server
 
+**macOS/Linux:**
 ```bash
 # Development mode with auto-reload
 uvicorn api:app --reload --port 8000
 
 # Production mode
 uvicorn api:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+**Windows:**
+```cmd
+REM Development mode with auto-reload
+uv run uvicorn api:app --reload --port 8000
+
+REM Production mode (Note: --workers not supported on Windows)
+uv run uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
 ### API Endpoints
@@ -641,6 +681,8 @@ uvicorn api:app --host 0.0.0.0 --port 8000 --workers 4
 | `/config` | GET | View current configuration |
 
 ### Example Requests
+
+#### macOS / Linux
 
 ```bash
 # Analyze image
@@ -661,6 +703,44 @@ curl -X POST http://localhost:8000/anonymize/text \
 
 # Health check
 curl http://localhost:8000/health
+```
+
+#### Windows CMD
+
+```cmd
+REM Analyze image
+curl -X POST -F "file=@image.jpg" http://localhost:8000/analyze/image
+
+REM Process image (returns sanitized JPEG)
+curl -X POST -F "file=@image.jpg" http://localhost:8000/process/image -o sanitized.jpg
+
+REM Detect PII in text (escape double quotes with backslash)
+curl -X POST http://localhost:8000/analyze/text -H "Content-Type: application/json" -d "{\"text\": \"Email: john@example.com\"}"
+
+REM Anonymize text
+curl -X POST http://localhost:8000/anonymize/text -H "Content-Type: application/json" -d "{\"text\": \"Contact John Smith at john@example.com\"}"
+
+REM Health check
+curl http://localhost:8000/health
+```
+
+#### Windows PowerShell
+
+```powershell
+# Analyze image
+curl -X POST -F "file=@image.jpg" http://localhost:8000/analyze/image
+
+# Process image
+curl -X POST -F "file=@image.jpg" http://localhost:8000/process/image -o sanitized.jpg
+
+# Detect PII in text (use Invoke-RestMethod for easier JSON handling)
+Invoke-RestMethod -Uri "http://localhost:8000/analyze/text" -Method POST -ContentType "application/json" -Body '{"text": "Email: john@example.com"}'
+
+# Anonymize text
+Invoke-RestMethod -Uri "http://localhost:8000/anonymize/text" -Method POST -ContentType "application/json" -Body '{"text": "Contact John Smith at john@example.com"}'
+
+# Health check
+Invoke-RestMethod -Uri "http://localhost:8000/health"
 ```
 
 ### Interactive Docs

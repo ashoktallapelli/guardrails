@@ -42,9 +42,16 @@ uv sync
 
 ### 3. Download Test Images
 
+**macOS/Linux:**
 ```bash
-# Download a sample image
+mkdir -p test_images
 curl -L "https://picsum.photos/800/600" -o test_images/sample.jpg
+```
+
+**Windows (PowerShell):**
+```powershell
+mkdir test_images -Force
+Invoke-WebRequest -Uri "https://picsum.photos/800/600" -OutFile "test_images/sample.jpg"
 ```
 
 ## Usage
