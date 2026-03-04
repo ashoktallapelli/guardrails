@@ -60,15 +60,99 @@ if sys.platform == 'win32':
     except ImportError:
         pass
 
-# Configure logging
+# Configure console logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Separate audit logger for file logging
+audit_logger = logging.getLogger("guardrails.audit")
+audit_logger.setLevel(logging.INFO)
+_audit_handler_configured = False
+
 # Cache for ML models (loaded once)
 _model_cache = {}
+
+
+def setup_file_logging(config: Dict[str, Any]) -> None:
+    """Set up file logging for audit trail if enabled in config."""
+    global _audit_handler_configured
+
+    if _audit_handler_configured:
+        return
+
+    if not config.get("log_decisions_to_file", False):
+        return
+
+    log_file = config.get("log_file_path", "guardrails_audit.log")
+    log_level = config.get("log_level", "INFO").upper()
+
+    try:
+        # Create file handler with JSON-friendly format
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+
+        # Simple format - we'll log JSON directly
+        file_handler.setFormatter(logging.Formatter('%(message)s'))
+
+        audit_logger.addHandler(file_handler)
+        _audit_handler_configured = True
+
+        logger.info(f"Audit logging enabled: {log_file}")
+    except Exception as e:
+        logger.warning(f"Failed to set up file logging: {e}")
+
+
+def log_decision(result: Dict[str, Any], input_type: str = "image") -> None:
+    """Log a decision to the audit log file as JSON."""
+    if not _audit_handler_configured:
+        return
+
+    # Create audit record
+    audit_record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "input_type": input_type,
+        "decision": result.get("decision", "UNKNOWN"),
+        "is_safe": result.get("is_safe", True),
+    }
+
+    # Add relevant fields based on input type
+    if input_type == "image":
+        audit_record["input_path"] = result.get("input_path", "unknown")
+        audit_record["sha256"] = result.get("sha256") or result.get("meta", {}).get("sha256", "")
+        audit_record["mime_type"] = result.get("mime_type") or result.get("meta", {}).get("mime_type", "")
+
+        # Add scores
+        if "checks" in result:
+            checks = result["checks"]
+            if "nsfw" in checks:
+                audit_record["nsfw_score"] = checks["nsfw"].get("score", 0)
+            if "safety" in checks:
+                audit_record["violence_scores"] = checks["safety"].get("scores", {})
+            if "hate_symbols" in checks:
+                audit_record["hate_scores"] = checks["hate_symbols"].get("scores", {})
+        elif "results" in result:
+            results = result["results"]
+            if "nsfw" in results:
+                audit_record["nsfw_score"] = results["nsfw"].get("score", 0)
+            if "violence" in results:
+                audit_record["violence_scores"] = results["violence"].get("scores", {})
+            if "hate_symbols" in results:
+                audit_record["hate_scores"] = results["hate_symbols"].get("scores", {})
+
+        # Add reasons if rejected
+        if result.get("reasons"):
+            audit_record["reasons"] = result["reasons"]
+
+    elif input_type == "text":
+        audit_record["text_length"] = result.get("original_length", 0)
+        audit_record["pii_count"] = result.get("pii", {}).get("entity_count", 0)
+        audit_record["anonymized"] = result.get("anonymized", False)
+
+    # Log as JSON line
+    audit_logger.info(json.dumps(audit_record))
 
 
 def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -92,6 +176,9 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
 
     if not config:
         raise ValueError(f"Config file is empty: {config_path}")
+
+    # Set up file logging if enabled
+    setup_file_logging(config)
 
     logger.info(f"Loaded config from {config_path}")
     return config
@@ -890,6 +977,10 @@ def analyze_image(
     result["meta"]["processing_ms"] = int((time.time() - t0) * 1000)
 
     logger.info(f"Analysis complete: {result['decision']}")
+
+    # Log decision to audit file
+    log_decision(result, input_type="image")
+
     return result
 
 
@@ -948,6 +1039,7 @@ def run_guardrails(
         result["decision"] = "REJECT"
         result["reasons"].append(f"File validation failed: {mime_info}")
         logger.warning(f"REJECT: {mime_info}")
+        log_decision(result, input_type="image")
         return result
 
     result["mime_type"] = mime_info
@@ -958,6 +1050,7 @@ def run_guardrails(
     except Exception as e:
         result["decision"] = "REJECT"
         result["reasons"].append(f"Failed to open image: {e}")
+        log_decision(result, input_type="image")
         return result
 
     valid, res_info = validate_resolution(img, config)
@@ -967,6 +1060,7 @@ def run_guardrails(
         result["decision"] = "REJECT"
         result["reasons"].append(f"Resolution check failed: {res_info}")
         logger.warning(f"REJECT: {res_info}")
+        log_decision(result, input_type="image")
         return result
 
     result["resolution"] = res_info
@@ -984,6 +1078,7 @@ def run_guardrails(
         result["decision"] = "REJECT"
         result["reasons"].append(f"NSFW score {nsfw_score:.2f} >= threshold {config['nsfw_threshold']}")
         logger.warning(f"REJECT: NSFW content detected (score: {nsfw_score:.2f})")
+        log_decision(result, input_type="image")
         return result
 
     # Step 6: Violence/Safety check (LAION-SAFETY style)
@@ -1001,6 +1096,7 @@ def run_guardrails(
                 f"weapons={safety_scores.get('weapons', 0):.2f}"
             )
             logger.warning(f"REJECT: Unsafe content detected (scores: {safety_scores})")
+            log_decision(result, input_type="image")
             return result
 
     # Step 7: Hate symbol detection (CLIP-based)
@@ -1017,6 +1113,7 @@ def run_guardrails(
                 f"Hate symbols detected: combined_score={hate_scores.get('combined_hate_score', 0):.2f}"
             )
             logger.warning(f"REJECT: Hate symbols detected (scores: {hate_scores})")
+            log_decision(result, input_type="image")
             return result
 
     # Step 8: PII redaction (OCR + masking)
@@ -1045,6 +1142,9 @@ def run_guardrails(
     logger.info(f"ALLOW: Sanitized image saved to {output_path}")
     result["reasons"].append("All checks passed")
 
+    # Log decision to audit file
+    log_decision(result, input_type="image")
+
     return result
 
 
@@ -1069,6 +1169,11 @@ def analyze_text(text: str, config: Dict[str, Any], anonymize: bool = False) -> 
         pii_result = detect_text_pii(text, config)
         result["pii"] = pii_result
         result["anonymized"] = False
+
+    # Log to audit file
+    result["decision"] = "ALLOW"  # Text PII doesn't reject, just detects/anonymizes
+    result["is_safe"] = True
+    log_decision(result, input_type="text")
 
     return result
 

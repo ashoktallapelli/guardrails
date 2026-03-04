@@ -79,7 +79,7 @@ output_quality: 95  # JPEG quality (1-100)
 
 # Logging
 log_level: "INFO"
-log_decisions_to_file: false
+log_decisions_to_file: true
 log_file_path: "guardrails_audit.log"
 
 # Environment settings (for HuggingFace/Transformers)
