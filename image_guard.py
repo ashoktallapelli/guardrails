@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
@@ -67,9 +68,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Separate audit logger for file logging
+# Separate audit logger for file logging (does not propagate to console)
 audit_logger = logging.getLogger("guardrails.audit")
 audit_logger.setLevel(logging.INFO)
+audit_logger.propagate = False  # Don't print to console
 _audit_handler_configured = False
 
 # Cache for ML models (loaded once)
@@ -105,17 +107,28 @@ def setup_file_logging(config: Dict[str, Any]) -> None:
         logger.warning(f"Failed to set up file logging: {e}")
 
 
+def save_json_result(result: Dict[str, Any], output_dir: Path) -> Path:
+    """Save JSON result to file with UUID name."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    unique_id = result.get("output_id") or uuid.uuid4().hex[:12]
+    json_path = output_dir / f"{unique_id}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+    return json_path
+
+
 def log_decision(result: Dict[str, Any], input_type: str = "image") -> None:
     """Log a decision to the audit log file as JSON."""
     if not _audit_handler_configured:
         return
 
     # Create audit record
+    decision = result.get("decision", "UNKNOWN")
     audit_record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "input_type": input_type,
-        "decision": result.get("decision", "UNKNOWN"),
-        "is_safe": result.get("is_safe", True),
+        "decision": decision,
+        "is_safe": decision == "ALLOW",  # is_safe is True only when ALLOW
     }
 
     # Add relevant fields based on input type
@@ -1017,6 +1030,9 @@ def run_guardrails(
     """
     from PIL import Image
 
+    # Generate unique ID for this processing run
+    unique_id = uuid.uuid4().hex[:12]
+
     result = {
         "input_path": str(image_path),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1024,6 +1040,7 @@ def run_guardrails(
         "reasons": [],
         "checks": {},
         "output_path": None,
+        "output_id": unique_id,
     }
 
     # Step 1: Compute file hash for audit
@@ -1131,11 +1148,16 @@ def run_guardrails(
     result["perceptual_hash"] = phash
     result["checks"]["phash_computed"] = True
 
-    # Step 11: Save sanitized output
+    # Step 11: Save sanitized output to organized folder structure
     if output_dir is None:
-        output_dir = image_path.parent
+        output_dir = image_path.parent / "output"
 
-    output_path = output_dir / f"{image_path.stem}_sanitized.jpg"
+    # Create decision-based subfolder (allowed/rejected)
+    decision_folder = output_dir / "allowed"
+    decision_folder.mkdir(parents=True, exist_ok=True)
+
+    # Use UUID for unbiased filename (already generated at start)
+    output_path = decision_folder / f"{unique_id}.jpg"
     img.save(output_path, format="JPEG", quality=config["output_quality"])
     result["output_path"] = str(output_path)
 
@@ -1217,6 +1239,10 @@ def main():
         action="store_true",
         help="Anonymize PII in text (use with --text or --text-file)"
     )
+    parser.add_argument(
+        "--save-json",
+        help="Save JSON results to specified directory"
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None
@@ -1257,29 +1283,57 @@ def main():
 
     result = run_guardrails(image_path, config, output_dir)
 
+    # Save JSON results if requested
+    if args.save_json:
+        json_dir = Path(args.save_json)
+        json_path = save_json_result(result, json_dir)
+        logger.info(f"JSON saved to: {json_path}")
+
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"\n{'='*60}")
-        print(f"DECISION: {result['decision']}")
-        print(f"{'='*60}")
-        print(f"Input:    {result['input_path']}")
-        print(f"SHA256:   {result['sha256']}")
-        if result.get('mime_type'):
-            print(f"MIME:     {result['mime_type']}")
-        if result.get('resolution'):
-            print(f"Size:     {result['resolution']}")
-        if 'nsfw' in result.get('checks', {}):
-            print(f"NSFW:     {result['checks']['nsfw']['score']:.4f}")
-        if 'safety' in result.get('checks', {}):
-            scores = result['checks']['safety']['scores']
-            print(f"Violence: {scores.get('violence', 0):.4f}")
-            print(f"Weapons:  {scores.get('weapons', 0):.4f}")
-            print(f"Safe:     {scores.get('safe', 0):.4f}")
+        # Simplified console output with decision and safety scores
+        decision = result['decision']
+        print(f"\n{'='*50}")
+        print(f"  DECISION: {decision}")
+        print(f"{'='*50}")
+
+        # Show rejection reason if rejected
+        if decision == "REJECT" and result.get('reasons'):
+            print(f"\n  Reason: {result['reasons'][0]}")
+
+        # Safety scores summary (only if checks were performed)
+        checks = result.get('checks', {})
+        has_safety_checks = any(k in checks for k in ['nsfw', 'safety', 'hate_symbols'])
+
+        if has_safety_checks:
+            print(f"\n  Safety Scores:")
+            if 'nsfw' in checks:
+                nsfw_score = checks['nsfw']['score']
+                nsfw_status = "SAFE" if checks['nsfw']['safe'] else "UNSAFE"
+                print(f"    NSFW:         {nsfw_score:.4f} ({nsfw_status})")
+
+            if 'safety' in checks:
+                scores = checks['safety']['scores']
+                safe_status = "SAFE" if checks['safety']['safe'] else "UNSAFE"
+                print(f"    Violence:     {scores.get('violence', 0):.4f}")
+                print(f"    Weapons:      {scores.get('weapons', 0):.4f}")
+                print(f"    Disturbing:   {scores.get('disturbing', 0):.4f}")
+                print(f"    Safe:         {scores.get('safe', 0):.4f} ({safe_status})")
+
+            if 'hate_symbols' in checks:
+                hate_scores = checks['hate_symbols']['scores']
+                hate_status = "SAFE" if checks['hate_symbols']['safe'] else "UNSAFE"
+                print(f"    Hate Score:   {hate_scores.get('combined_hate_score', 0):.4f} ({hate_status})")
+
+        # Output info (only show if image was saved)
         if result.get('output_path'):
-            print(f"Output:   {result['output_path']}")
-        print(f"Reasons:  {'; '.join(result['reasons'])}")
-        print(f"{'='*60}\n")
+            print(f"\n  Output:")
+            print(f"    Image: {result['output_path']}")
+            if result.get('output_id'):
+                print(f"    ID:    {result['output_id']}")
+
+        print(f"{'='*50}\n")
 
 
 if __name__ == "__main__":
