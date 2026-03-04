@@ -47,13 +47,6 @@ face_blur_kernel_size: 51  # Must be odd number; larger = more blur
 # Output settings
 output_quality: 95  # JPEG quality (1-100)
 
-# Action thresholds for tiered response
-# (for use with demo_app.py)
-thresholds:
-  auto_allow_below: 0.3   # NSFW < 0.3 -> auto allow
-  manual_review_above: 0.5  # NSFW >= 0.5 but < 0.8 -> manual review
-  auto_reject_above: 0.8  # NSFW >= 0.8 -> auto reject
-
 # Logging
 log_level: "INFO"
 log_decisions_to_file: false
