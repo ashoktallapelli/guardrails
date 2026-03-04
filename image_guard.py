@@ -27,12 +27,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
 
-# Suppress HuggingFace background SSL errors (safetensors auto-conversion thread)
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-
 import yaml
+
+
+def _load_env_config() -> Dict[str, Any]:
+    """Load environment settings from config.yaml early (before other imports)."""
+    config_path = Path("config.yaml")
+    if config_path.exists():
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+        return config.get("environment", {})
+    return {}
+
+
+# Load environment settings from config.yaml
+_env_config = _load_env_config()
+
+# HuggingFace offline mode settings (read from config.yaml)
+if _env_config.get("hf_hub_offline", True):
+    os.environ["HF_HUB_OFFLINE"] = "1"
+if _env_config.get("transformers_offline", True):
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+if _env_config.get("hf_hub_disable_implicit_token", True):
+    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
 # Fix SSL certificates on Windows
 if sys.platform == 'win32':
@@ -50,35 +67,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Default configuration
-DEFAULT_CONFIG = {
-    "allowed_mime_types": ["image/jpeg", "image/png", "image/webp"],
-    "max_file_size_mb": 10,
-    "max_resolution": {"width": 4096, "height": 4096},
-    "nsfw_threshold": 0.80,
-    "violence_threshold": 0.70,
-    "enable_violence_check": True,
-    "enable_hate_symbol_check": True,
-    "hate_symbol_threshold": 0.75,
-    "enable_pii_redaction": True,
-    "enable_face_blur": True,
-    "face_blur_kernel_size": 51,
-    "output_quality": 95,
-}
-
 # Cache for ML models (loaded once)
 _model_cache = {}
 
 
 def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load configuration from YAML file or use defaults."""
-    config = DEFAULT_CONFIG.copy()
-    if config_path and config_path.exists():
-        with open(config_path) as f:
-            user_config = yaml.safe_load(f)
-            if user_config:
-                config.update(user_config)
-        logger.info(f"Loaded config from {config_path}")
+    """Load configuration from config.yaml. Fails if not found.
+
+    Single source of truth - no default fallbacks.
+    """
+    # Use config.yaml from current directory if not specified
+    if config_path is None:
+        config_path = Path("config.yaml")
+
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Config file not found: {config_path}\n"
+            "Please ensure config.yaml exists in the current directory.\n"
+            "Or specify path with: --config /path/to/config.yaml"
+        )
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    if not config:
+        raise ValueError(f"Config file is empty: {config_path}")
+
+    logger.info(f"Loaded config from {config_path}")
     return config
 
 
@@ -140,9 +155,9 @@ def strip_exif(img) -> bytes:
     return buf.getvalue()
 
 
-def check_nsfw(img, config: Dict[str, Any]) -> Tuple[bool, float]:
+def check_nsfw_opennsfw2(img, config: Dict[str, Any]) -> Tuple[bool, float]:
     """
-    Run NSFW detection using OpenNSFW2.
+    Run NSFW detection using OpenNSFW2 (ResNet-50 based).
     Returns (is_safe, nsfw_score).
     """
     try:
@@ -168,6 +183,81 @@ def check_nsfw(img, config: Dict[str, Any]) -> Tuple[bool, float]:
     except Exception as e:
         logger.warning(f"NSFW check failed: {e}")
         return True, 0.0
+
+
+def check_nsfw_adamcodd(img, config: Dict[str, Any]) -> Tuple[bool, float]:
+    """
+    Run NSFW detection using AdamCodd/vit-base-nsfw-detector (ViT based).
+    Higher accuracy (96.54%) than OpenNSFW2, but larger model (~330MB).
+    Returns (is_safe, nsfw_score).
+    """
+    try:
+        from transformers import AutoImageProcessor, AutoModelForImageClassification
+        import torch
+    except ImportError:
+        logger.warning("transformers/torch not installed, skipping NSFW check")
+        return True, 0.0
+
+    model_name = "AdamCodd/vit-base-nsfw-detector"
+
+    # Use cached model
+    if "nsfw_adamcodd_model" not in _model_cache:
+        logger.info("Loading AdamCodd NSFW model...")
+        try:
+            # Try local cache first
+            _model_cache["nsfw_adamcodd_processor"] = AutoImageProcessor.from_pretrained(model_name, local_files_only=True)
+            _model_cache["nsfw_adamcodd_model"] = AutoModelForImageClassification.from_pretrained(model_name, local_files_only=True)
+            logger.info("Loaded AdamCodd NSFW model from local cache")
+        except Exception as local_error:
+            logger.info("Model not in local cache, trying to download...")
+            try:
+                _model_cache["nsfw_adamcodd_processor"] = AutoImageProcessor.from_pretrained(model_name)
+                _model_cache["nsfw_adamcodd_model"] = AutoModelForImageClassification.from_pretrained(model_name)
+            except Exception as e:
+                error_str = str(e).lower()
+                if any(keyword in error_str for keyword in ["ssl", "certificate", "connection", "network"]):
+                    logger.warning(f"Cannot download AdamCodd model (network/SSL issue): {e}")
+                    logger.warning("Skipping NSFW check - model not available offline")
+                    _model_cache["nsfw_adamcodd_unavailable"] = True
+                    return True, 0.0
+                raise
+
+    if _model_cache.get("nsfw_adamcodd_unavailable"):
+        return True, 0.0
+
+    processor = _model_cache["nsfw_adamcodd_processor"]
+    model = _model_cache["nsfw_adamcodd_model"]
+
+    try:
+        inputs = processor(images=img, return_tensors="pt")
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            probs = torch.softmax(outputs.logits, dim=1)
+
+        # Output: [normal, nsfw] - index 1 is NSFW score
+        nsfw_score = float(probs[0][1])
+        is_safe = nsfw_score < config["nsfw_threshold"]
+
+        logger.info(f"AdamCodd NSFW score: {nsfw_score:.4f}")
+        return is_safe, nsfw_score
+    except Exception as e:
+        logger.warning(f"AdamCodd NSFW check failed: {e}")
+        return True, 0.0
+
+
+def check_nsfw(img, config: Dict[str, Any]) -> Tuple[bool, float]:
+    """
+    Run NSFW detection using configured model.
+    Supports: 'opennsfw2' (default) or 'adamcodd' (higher accuracy).
+    Returns (is_safe, nsfw_score).
+    """
+    nsfw_model = config.get("nsfw_model", "opennsfw2").lower()
+
+    if nsfw_model == "adamcodd":
+        return check_nsfw_adamcodd(img, config)
+    else:
+        return check_nsfw_opennsfw2(img, config)
 
 
 def check_violence_safety(img, config: Dict[str, Any]) -> Tuple[bool, Dict[str, float]]:

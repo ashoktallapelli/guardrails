@@ -16,6 +16,11 @@ max_resolution:
   height: 4096
 
 # NSFW Detection
+# Model options:
+#   - "opennsfw2": ResNet-50 based, ~24MB, ~90% accuracy (default)
+#   - "adamcodd": ViT based, ~330MB, ~96.5% accuracy (higher accuracy)
+nsfw_model: "opennsfw2"
+
 # Score ranges from 0.0 (safe) to 1.0 (explicit)
 # Lower threshold = stricter filtering
 nsfw_threshold: 0.80
@@ -53,3 +58,10 @@ thresholds:
 log_level: "INFO"
 log_decisions_to_file: false
 log_file_path: "guardrails_audit.log"
+
+# Environment settings (for HuggingFace/Transformers)
+# Set to false if you need to download models
+environment:
+  hf_hub_offline: true              # Use cached models only (no network)
+  transformers_offline: true        # Transformers offline mode
+  hf_hub_disable_implicit_token: true  # Disable token checks
