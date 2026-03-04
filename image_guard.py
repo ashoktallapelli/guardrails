@@ -52,6 +52,12 @@ if _env_config.get("transformers_offline", True):
 if _env_config.get("hf_hub_disable_implicit_token", True):
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
+# Suppress tldextract SSL warnings on corporate networks
+# These are non-blocking - tldextract falls back to local snapshot
+import warnings
+import logging
+logging.getLogger("tldextract").setLevel(logging.ERROR)
+
 # Fix SSL certificates on Windows
 if sys.platform == 'win32':
     try:
