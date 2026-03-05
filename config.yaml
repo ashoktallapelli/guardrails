@@ -19,7 +19,7 @@ max_resolution:
 # Model options:
 #   - "opennsfw2": ResNet-50 based, ~24MB, ~90% accuracy (default)
 #   - "adamcodd": ViT based, ~330MB, ~96.5% accuracy (higher accuracy)
-nsfw_model: "opennsfw2"
+nsfw_model: "adamcodd"
 
 # Score ranges from 0.0 (safe) to 1.0 (explicit)
 # Lower threshold = stricter filtering
