@@ -1,6 +1,16 @@
-# Image Guardrails Configuration
-# ================================
-# Adjust these thresholds based on your use case
+# Guardrails Configuration
+# ========================
+# Pluggable architecture - add/remove/reorder checks here
+
+# Checks to run (in order)
+# Available: file_validation, nsfw, violence, hate_symbols, pii, faces
+guardrails:
+  - file_validation
+  - nsfw
+  - violence
+  - hate_symbols
+  - pii
+  - faces
 
 # File validation
 allowed_mime_types:
@@ -85,6 +95,6 @@ log_file_path: "guardrails_audit.log"
 # Environment settings (for HuggingFace/Transformers)
 # Set to false if you need to download models
 environment:
-  hf_hub_offline: true              # Use cached models only (no network)
-  transformers_offline: true        # Transformers offline mode
-  hf_hub_disable_implicit_token: true  # Disable token checks
+  hf_hub_offline: false              # Use cached models only (no network)
+  transformers_offline: false        # Transformers offline mode
+  hf_hub_disable_implicit_token: false  # Disable token checks

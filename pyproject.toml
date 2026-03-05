@@ -1,7 +1,7 @@
 [project]
-name = "image-guardrails-demo"
-version = "0.1.0"
-description = "A local-first image guardrails pipeline for validating and sanitizing images before AI processing"
+name = "guardrails"
+version = "1.0.0"
+description = "A pluggable image and text guardrails pipeline for validating and sanitizing content before AI processing"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -26,15 +26,8 @@ dependencies = [
     "python-multipart>=0.0.22",
 ]
 
-[project.optional-dependencies]
-demo = [
-    "streamlit>=1.28.0",
-]
-api = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.34.0",
-    "python-multipart>=0.0.9",
-]
+[project.scripts]
+guardrails = "guardrails.cli:main"
 
 [dependency-groups]
 dev = [
@@ -43,8 +36,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-only-include = ["image_guard.py", "image_qa.py", "demo_app.py"]
+packages = ["src/guardrails"]
 
 [build-system]
 requires = ["hatchling"]
