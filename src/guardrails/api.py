@@ -59,7 +59,7 @@ class ScanImageResponse(BaseModel):
     reason: str  # Human-readable reason
     is_safe: bool
     results: Dict[str, MetricResponseOutput]
-    sanitized_image_base64: Optional[str] = None
+    image_base64: Optional[str] = None
     meta: Dict[str, Any] = {}
 
 
@@ -257,7 +257,7 @@ async def scan_image(
 
     **results** - Individual scanner results with scores and thresholds
 
-    **sanitized_image_base64** - Base64-encoded output image (null if rejected)
+    **image_base64** - Base64-encoded output image (null if rejected)
 
     **meta** - Metadata including SHA-256 hash, processing time, filename
 
@@ -284,7 +284,7 @@ async def scan_image(
         "nsfw": {"score": 0.02, "threshold": 0.8, "is_pass": true},
         "violence": {"score": 0.05, "threshold": 0.7, "is_pass": true}
       },
-      "sanitized_image_base64": "/9j/4AAQSkZJRg...",
+      "image_base64": "/9j/4AAQSkZJRg...",
       "meta": {
         "sha256": "abc123...",
         "processing_ms": 245,
@@ -304,7 +304,7 @@ async def scan_image(
         "nsfw": {"score": 0.02, "threshold": 0.8, "is_pass": true},
         "faces": {"score": 2.0, "threshold": 0.0, "is_pass": false}
       },
-      "sanitized_image_base64": null,
+      "image_base64": null,
       "meta": {
         "sha256": "abc123...",
         "processing_ms": 312,
@@ -340,11 +340,11 @@ async def scan_image(
     reason = reasons[0] if reasons else "All checks passed"
 
     # Encode image if not rejected
-    sanitized_image_base64 = None
+    image_base64 = None
     if decision != "REJECT" and "output" in pipeline_result:
         buf = io.BytesIO()
         pipeline_result["output"].save(buf, format="JPEG", quality=_config.get("output_quality", 95))
-        sanitized_image_base64 = base64.b64encode(buf.getvalue()).decode()
+        image_base64 = base64.b64encode(buf.getvalue()).decode()
 
     processing_ms = int((time.time() - t0) * 1000)
 
@@ -353,7 +353,7 @@ async def scan_image(
         reason=reason,
         is_safe=pipeline_result.get("is_safe", True),
         results=results,
-        sanitized_image_base64=sanitized_image_base64,
+        image_base64=image_base64,
         meta={
             "sha256": file_hash,
             "processing_ms": processing_ms,
