@@ -13,12 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class FacesCheck(BaseCheck):
-    """Detects and blurs faces in images for privacy."""
+    """Detects faces in images for privacy."""
 
     name = "faces"
     input_type = "image"
-    can_reject = False  # Faces don't reject, only redact
-    can_redact = True
+    can_reject = True   # Faces trigger rejection
+    can_redact = False
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -75,12 +75,15 @@ class FacesCheck(BaseCheck):
             face_count = len(faces)
             logger.info(f"Face detection: found {face_count} face(s)")
 
-            action = "redact" if face_count > 0 else "allow"
+            is_safe = face_count == 0
+            action = "allow" if is_safe else "reject"
+            reason = None if is_safe else f"Faces detected: {face_count} face(s) found"
 
             return CheckResult(
-                safe=True,  # Faces don't make image "unsafe", just need blurring
+                safe=is_safe,
                 score=float(face_count),
                 action=action,
+                reason=reason,
                 details={
                     "face_count": face_count,
                     "faces": face_boxes
@@ -144,7 +147,9 @@ class FacesCheck(BaseCheck):
 
     def get_reason(self, result: CheckResult) -> str:
         """Generate human-readable reason."""
+        if result.reason:
+            return result.reason
         face_count = result.details.get("face_count", 0)
         if face_count > 0:
-            return f"Faces blurred: {face_count}"
+            return f"Faces detected: {face_count}"
         return "No faces detected"

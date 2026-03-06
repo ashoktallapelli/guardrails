@@ -90,11 +90,10 @@ class Pipeline:
 
         Returns:
             Result dictionary with:
-            - decision: ALLOW, REDACT, or REJECT
+            - decision: ALLOW or REJECT
             - reasons: List of human-readable reasons
             - checks: Individual check results
             - is_safe: Boolean
-            - is_redacted: Boolean
             - output: Processed data (if not rejected)
         """
         result = {
@@ -103,11 +102,7 @@ class Pipeline:
             "reasons": [],
             "checks": {},
             "is_safe": True,
-            "is_redacted": False,
         }
-
-        processed_data = input_data
-        needs_redaction = False
 
         for check in self.checks:
             # Skip if wrong input type
@@ -120,7 +115,7 @@ class Pipeline:
                 continue
 
             # Run the check
-            check_result = check.check(processed_data, self.config)
+            check_result = check.check(input_data, self.config)
             result["checks"][check.name] = {
                 "safe": check_result.safe,
                 "score": check_result.score,
@@ -137,31 +132,9 @@ class Pipeline:
                 logger.warning(f"REJECT: {check.get_reason(check_result)}")
                 return result
 
-            # Handle redaction (continue, apply later)
-            if check_result.action == "redact" and check.can_redact:
-                needs_redaction = True
-                result["reasons"].append(check.get_reason(check_result))
-
-        # Apply redactions if needed
-        if needs_redaction:
-            for check in self.checks:
-                if check.input_type != input_type and check.input_type != "both":
-                    continue
-                if not check.can_redact:
-                    continue
-
-                check_data = result["checks"].get(check.name, {})
-                if check_data.get("action") == "redact":
-                    processed_data = check.redact(processed_data, self.config)
-
-            result["decision"] = "REDACT"
-            result["is_redacted"] = True
-
-        # Set default reason if none
-        if not result["reasons"]:
-            result["reasons"].append("All checks passed, no redaction needed")
-
-        result["output"] = processed_data
+        # All checks passed
+        result["reasons"].append("All checks passed")
+        result["output"] = input_data
         logger.info(f"Pipeline result: {result['decision']}")
         return result
 

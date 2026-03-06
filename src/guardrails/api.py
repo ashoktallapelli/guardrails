@@ -55,11 +55,10 @@ class MetricResponseOutput(BaseModel):
 
 class ScanImageResponse(BaseModel):
     """Response for /scan/image endpoint."""
-    decision: str  # ALLOW, REDACT, or REJECT
+    decision: str  # ALLOW or REJECT
     reason: str  # Human-readable reason
     is_safe: bool
     results: Dict[str, MetricResponseOutput]
-    is_redacted: bool = False
     sanitized_image_base64: Optional[str] = None
     meta: Dict[str, Any] = {}
 
@@ -71,12 +70,10 @@ class TextScanRequest(BaseModel):
 
 class TextScanResponse(BaseModel):
     """Response for /scan/text endpoint."""
-    decision: str  # ALLOW or REDACT
+    decision: str  # ALLOW or REJECT
     reason: str
     is_safe: bool
     results: Dict[str, MetricResponseOutput]
-    is_redacted: bool = False
-    sanitized_text: Optional[str] = None
     entities: list = []
 
 
@@ -222,11 +219,10 @@ async def scan_image(
     """
     ## Overview
 
-    Validates and sanitizes an image before AI processing.
+    Validates an image before AI processing.
 
     This endpoint analyzes the uploaded image using configured guardrail scanners
-    to detect potential safety, security, and compliance risks. If issues are found,
-    the image may be rejected or sanitized before returning.
+    to detect potential safety, security, and compliance risks.
 
     **Validation includes checks for:**
     - NSFW/explicit content detection
@@ -252,8 +248,7 @@ async def scan_image(
     ## Response
 
     **decision** - Final verdict for the image
-    - `ALLOW`: Image is safe, no issues detected. Original image returned (EXIF stripped).
-    - `REDACT`: Image is safe but contains PII/faces. Sanitized image returned.
+    - `ALLOW`: Image is safe, no issues detected. Image returned (EXIF stripped).
     - `REJECT`: Unsafe content detected. No image returned.
 
     **reason** - Human-readable explanation of the decision
@@ -261,8 +256,6 @@ async def scan_image(
     **is_safe** - Boolean indicating if content passed safety checks
 
     **results** - Individual scanner results with scores and thresholds
-
-    **is_redacted** - Boolean indicating if image was modified
 
     **sanitized_image_base64** - Base64-encoded output image (null if rejected)
 
@@ -275,13 +268,12 @@ async def scan_image(
     - Image is validated for file type using magic bytes (not extension)
     - All configured checks run in sequence
     - REJECT decision stops processing immediately
-    - REDACT applies PII redaction and face blur
     - EXIF metadata is stripped from all returned images
     - Original image is never stored
 
     ---
 
-    ## Example Response
+    ## Example Response (ALLOW)
 
     ```json
     {
@@ -292,11 +284,30 @@ async def scan_image(
         "nsfw": {"score": 0.02, "threshold": 0.8, "is_pass": true},
         "violence": {"score": 0.05, "threshold": 0.7, "is_pass": true}
       },
-      "is_redacted": false,
       "sanitized_image_base64": "/9j/4AAQSkZJRg...",
       "meta": {
         "sha256": "abc123...",
         "processing_ms": 245,
+        "filename": "photo.jpg"
+      }
+    }
+    ```
+
+    ## Example Response (REJECT)
+
+    ```json
+    {
+      "decision": "REJECT",
+      "reason": "Faces detected: 2 face(s) found",
+      "is_safe": false,
+      "results": {
+        "nsfw": {"score": 0.02, "threshold": 0.8, "is_pass": true},
+        "faces": {"score": 2.0, "threshold": 0.0, "is_pass": false}
+      },
+      "sanitized_image_base64": null,
+      "meta": {
+        "sha256": "abc123...",
+        "processing_ms": 312,
         "filename": "photo.jpg"
       }
     }
@@ -342,7 +353,6 @@ async def scan_image(
         reason=reason,
         is_safe=pipeline_result.get("is_safe", True),
         results=results,
-        is_redacted=pipeline_result.get("is_redacted", False),
         sanitized_image_base64=sanitized_image_base64,
         meta={
             "sha256": file_hash,
@@ -357,9 +367,9 @@ async def scan_text(request: TextScanRequest):
     """
     ## Overview
 
-    Validates and anonymizes text for PII before AI processing.
+    Validates text for PII before AI processing.
 
-    This endpoint analyzes the input text using Presidio to detect and anonymize
+    This endpoint analyzes the input text using Presidio to detect
     Personally Identifiable Information (PII) to ensure compliance and privacy.
 
     **Detection includes:**
@@ -387,18 +397,14 @@ async def scan_text(request: TextScanRequest):
     ## Response
 
     **decision** - Final verdict for the text
-    - `ALLOW`: No PII detected. Original text returned.
-    - `REDACT`: PII found and anonymized. Sanitized text returned.
+    - `ALLOW`: No PII detected. Text is safe.
+    - `REJECT`: PII found. Text rejected with details.
 
     **reason** - Human-readable explanation with entity counts
 
-    **is_safe** - Always true (PII detection doesn't make text "unsafe")
+    **is_safe** - Boolean indicating if text passed checks
 
     **results** - Scanner results with entity count
-
-    **is_redacted** - Boolean indicating if text was modified
-
-    **sanitized_text** - Anonymized text with PII replaced (e.g., `<EMAIL_ADDRESS>`)
 
     **entities** - List of detected PII entities with type, value, and confidence
 
@@ -412,23 +418,35 @@ async def scan_text(request: TextScanRequest):
     }
     ```
 
-    ## Example Response
+    ## Example Response (REJECT)
 
     ```json
     {
-      "decision": "REDACT",
-      "reason": "PII anonymized: 3 entities (PERSON, EMAIL_ADDRESS, PHONE_NUMBER)",
-      "is_safe": true,
+      "decision": "REJECT",
+      "reason": "PII detected: 3 entities (PERSON, EMAIL_ADDRESS, PHONE_NUMBER)",
+      "is_safe": false,
       "results": {
-        "pii": {"score": 3, "threshold": 0.35, "is_pass": true}
+        "pii": {"score": 3, "threshold": 0.35, "is_pass": false}
       },
-      "is_redacted": true,
-      "sanitized_text": "Contact <PERSON> at <EMAIL_ADDRESS> or <PHONE_NUMBER>",
       "entities": [
         {"type": "PERSON", "text": "John Doe", "score": 0.85},
         {"type": "EMAIL_ADDRESS", "text": "john@example.com", "score": 0.95},
         {"type": "PHONE_NUMBER", "text": "555-123-4567", "score": 0.75}
       ]
+    }
+    ```
+
+    ## Example Response (ALLOW)
+
+    ```json
+    {
+      "decision": "ALLOW",
+      "reason": "All checks passed",
+      "is_safe": true,
+      "results": {
+        "pii": {"score": 0, "threshold": 0.35, "is_pass": true}
+      },
+      "entities": []
     }
     ```
     """
@@ -453,20 +471,13 @@ async def scan_text(request: TextScanRequest):
     # Get decision and reason
     decision = pipeline_result.get("decision", "ALLOW")
     reasons = pipeline_result.get("reasons", [])
-
-    if decision == "REDACT" and entities:
-        entity_types = list(set(e.get("type", "UNKNOWN") for e in entities))
-        reason = f"PII anonymized: {len(entities)} entities ({', '.join(entity_types)})"
-    else:
-        reason = reasons[0] if reasons else "No PII detected"
+    reason = reasons[0] if reasons else "All checks passed"
 
     return TextScanResponse(
         decision=decision,
         reason=reason,
-        is_safe=True,
+        is_safe=pipeline_result.get("is_safe", True),
         results=results,
-        is_redacted=pipeline_result.get("is_redacted", False),
-        sanitized_text=pipeline_result.get("anonymized_text"),
         entities=entities,
     )
 

@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class PIICheck(BaseCheck):
-    """Detects and redacts PII in images and text."""
+    """Detects PII in images and text."""
 
     name = "pii"
     input_type = "both"  # Works on both images and text
-    can_reject = False   # PII doesn't reject, only redacts
-    can_redact = True
+    can_reject = True    # PII triggers rejection
+    can_redact = False
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -95,12 +95,16 @@ class PIICheck(BaseCheck):
             entity_count = len(entities)
             logger.info(f"PII detection: found {entity_count} entities")
 
-            action = "redact" if entity_count > 0 else "allow"
+            is_safe = entity_count == 0
+            action = "allow" if is_safe else "reject"
+            entity_types = list(set(e["type"] for e in entities))
+            reason = None if is_safe else f"PII detected: {entity_count} entities ({', '.join(entity_types)})"
 
             return CheckResult(
-                safe=True,  # PII doesn't make image "unsafe", just needs redaction
+                safe=is_safe,
                 score=float(entity_count),
                 action=action,
+                reason=reason,
                 details={
                     "text_found": True,
                     "entity_count": entity_count,
@@ -152,12 +156,16 @@ class PIICheck(BaseCheck):
             entity_count = len(entities)
             logger.info(f"Text PII detection: found {entity_count} entities")
 
-            action = "redact" if entity_count > 0 else "allow"
+            is_safe = entity_count == 0
+            action = "allow" if is_safe else "reject"
+            entity_types = list(set(e["type"] for e in entities))
+            reason = None if is_safe else f"PII detected: {entity_count} entities ({', '.join(entity_types)})"
 
             return CheckResult(
-                safe=True,
+                safe=is_safe,
                 score=float(entity_count),
                 action=action,
+                reason=reason,
                 details={
                     "entity_count": entity_count,
                     "entities": entities,
@@ -255,7 +263,9 @@ class PIICheck(BaseCheck):
 
     def get_reason(self, result: CheckResult) -> str:
         """Generate human-readable reason."""
+        if result.reason:
+            return result.reason
         entity_count = result.details.get("entity_count", 0)
         if entity_count > 0:
-            return f"PII redacted: {entity_count}"
+            return f"PII detected: {entity_count} entities"
         return "No PII detected"
