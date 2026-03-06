@@ -220,12 +220,87 @@ async def scan_image(
     file: UploadFile = File(..., description="Image file to scan"),
 ):
     """
-    Scan image for safety violations.
+    ## Overview
 
-    Decisions:
-    - REJECT: Unsafe content - no image returned
-    - REDACT: Safe but PII/faces found - sanitized image returned
-    - ALLOW: Safe and clean - original image returned (EXIF stripped)
+    Validates and sanitizes an image before AI processing.
+
+    This endpoint analyzes the uploaded image using configured guardrail scanners
+    to detect potential safety, security, and compliance risks. If issues are found,
+    the image may be rejected or sanitized before returning.
+
+    **Validation includes checks for:**
+    - NSFW/explicit content detection
+    - Violence and weapons detection
+    - Hate symbols and extremist imagery
+    - Personally Identifiable Information (PII) in text
+    - Face detection for privacy protection
+
+    ---
+
+    ## Request
+
+    **Content-Type:** `multipart/form-data`
+
+    **file** *(required)*
+    - The image file to scan
+    - **Supported formats:** JPEG, PNG, WebP, GIF
+    - **Max file size:** 10 MB (configurable)
+    - **Max resolution:** 4096x4096 (configurable)
+
+    ---
+
+    ## Response
+
+    **decision** - Final verdict for the image
+    - `ALLOW`: Image is safe, no issues detected. Original image returned (EXIF stripped).
+    - `REDACT`: Image is safe but contains PII/faces. Sanitized image returned.
+    - `REJECT`: Unsafe content detected. No image returned.
+
+    **reason** - Human-readable explanation of the decision
+
+    **is_safe** - Boolean indicating if content passed safety checks
+
+    **results** - Individual scanner results with scores and thresholds
+
+    **is_redacted** - Boolean indicating if image was modified
+
+    **sanitized_image_base64** - Base64-encoded output image (null if rejected)
+
+    **meta** - Metadata including SHA-256 hash, processing time, filename
+
+    ---
+
+    ## Operational Behavior
+
+    - Image is validated for file type using magic bytes (not extension)
+    - All configured checks run in sequence
+    - REJECT decision stops processing immediately
+    - REDACT applies PII redaction and face blur
+    - EXIF metadata is stripped from all returned images
+    - Original image is never stored
+
+    ---
+
+    ## Example Response
+
+    ```json
+    {
+      "decision": "ALLOW",
+      "reason": "All checks passed",
+      "is_safe": true,
+      "results": {
+        "nsfw": {"score": 0.02, "threshold": 0.8, "is_pass": true},
+        "violence": {"score": 0.05, "threshold": 0.7, "is_pass": true}
+      },
+      "is_redacted": false,
+      "sanitized_image_base64": "/9j/4AAQSkZJRg...",
+      "meta": {
+        "sha256": "abc123...",
+        "processing_ms": 245,
+        "filename": "photo.jpg"
+      }
+    }
+    ```
     """
     t0 = time.time()
 
@@ -280,11 +355,82 @@ async def scan_image(
 @app.post("/scan/text", response_model=TextScanResponse, tags=["Scan"])
 async def scan_text(request: TextScanRequest):
     """
-    Scan text for PII and automatically anonymize.
+    ## Overview
 
-    Decisions:
-    - REDACT: PII found and anonymized
-    - ALLOW: No PII found
+    Validates and anonymizes text for PII before AI processing.
+
+    This endpoint analyzes the input text using Presidio to detect and anonymize
+    Personally Identifiable Information (PII) to ensure compliance and privacy.
+
+    **Detection includes:**
+    - Email addresses
+    - Phone numbers
+    - Person names
+    - Credit card numbers
+    - Social Security Numbers (SSN)
+    - IP addresses
+    - Locations
+
+    ---
+
+    ## Request
+
+    **Content-Type:** `application/json`
+
+    **input_text** *(required)*
+    - The text content to scan for PII
+    - Must not be empty
+    - Must contain at least 1 character
+
+    ---
+
+    ## Response
+
+    **decision** - Final verdict for the text
+    - `ALLOW`: No PII detected. Original text returned.
+    - `REDACT`: PII found and anonymized. Sanitized text returned.
+
+    **reason** - Human-readable explanation with entity counts
+
+    **is_safe** - Always true (PII detection doesn't make text "unsafe")
+
+    **results** - Scanner results with entity count
+
+    **is_redacted** - Boolean indicating if text was modified
+
+    **sanitized_text** - Anonymized text with PII replaced (e.g., `<EMAIL_ADDRESS>`)
+
+    **entities** - List of detected PII entities with type, value, and confidence
+
+    ---
+
+    ## Example Request
+
+    ```json
+    {
+      "input_text": "Contact John Doe at john@example.com or 555-123-4567"
+    }
+    ```
+
+    ## Example Response
+
+    ```json
+    {
+      "decision": "REDACT",
+      "reason": "PII anonymized: 3 entities (PERSON, EMAIL_ADDRESS, PHONE_NUMBER)",
+      "is_safe": true,
+      "results": {
+        "pii": {"score": 3, "threshold": 0.35, "is_pass": true}
+      },
+      "is_redacted": true,
+      "sanitized_text": "Contact <PERSON> at <EMAIL_ADDRESS> or <PHONE_NUMBER>",
+      "entities": [
+        {"type": "PERSON", "text": "John Doe", "score": 0.85},
+        {"type": "EMAIL_ADDRESS", "text": "john@example.com", "score": 0.95},
+        {"type": "PHONE_NUMBER", "text": "555-123-4567", "score": 0.75}
+      ]
+    }
+    ```
     """
     # Run pipeline
     pipeline_result = _pipeline.run_text(request.input_text, anonymize=True)
