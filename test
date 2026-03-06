@@ -1,0 +1,684 @@
+app.py
+
+import os
+import io
+import re
+import time
+import base64
+import hashlib
+from typing import Dict, Any, Optional, Tuple, List
+import yaml
+from PIL import Image, ImageOps, ImageFilter, ImageDraw
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse, Response
+from starlette.requests import Request
+from pydantic import BaseModel
+
+
+# -----------------------------
+# Optional deps (lazy / safe)
+# -----------------------------
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+# NSFW ViT (pixel-level sexual content; optional)
+try:
+    import torch
+    from transformers import AutoImageProcessor, AutoModelForImageClassification
+except ImportError:
+    torch = None
+    AutoImageProcessor = None
+    AutoModelForImageClassification = None
+
+
+# -----------------------------
+# Config loading (bulletproof path)
+# -----------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def load_policy(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+POLICY_PATH = os.path.join(BASE_DIR, "policy.yaml")
+POLICY = load_policy(POLICY_PATH)
+
+def validate_policy(policy: dict):
+    if "image" not in policy:
+        raise RuntimeError(
+            "policy.yaml missing required top-level key: image: "
+            "(allowed_formats, max_pixels, max_file_bytes, reencode_format, max_width, max_height)"
+        )
+
+validate_policy(POLICY)
+
+
+# -----------------------------
+# Response model
+# -----------------------------
+class GuardrailResult(BaseModel):
+    decision: str                       # ALLOW | WARN | QUARANTINE | REDACT | BLOCK
+    is_safe: bool                       # semantics controlled by decision_safety map
+    results: Dict[str, Any]             # per-check details
+    actions: Dict[str, Any]             # what caller should do (send_to_llm, use_redacted_image, sanitized text)
+    sanitized: Dict[str, Any]           # hashes, re-encode info
+    meta: Dict[str, Any]                # timings, version
+
+
+# -----------------------------
+# Utilities
+# -----------------------------
+def sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+def pil_to_png_bytes(pil_img: Image.Image) -> bytes:
+    out = io.BytesIO()
+    pil_img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+def safe_open_image(image_bytes: bytes) -> Image.Image:
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()
+        return img
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+
+def validate_image(img: Image.Image, image_bytes: bytes) -> Dict[str, Any]:
+    cfg = POLICY["image"]
+    w, h = img.size
+
+    if len(image_bytes) > cfg["max_file_bytes"]:
+        raise HTTPException(status_code=413, detail="Image exceeds max_file_bytes")
+
+    if w > cfg["max_width"] or h > cfg["max_height"]:
+        raise HTTPException(status_code=400, detail="Image dimensions exceed max bounds")
+
+    if w * h > cfg["max_pixels"]:
+        raise HTTPException(status_code=400, detail="Image exceeds max pixel limit")
+
+    fmt = (img.format or "").upper()
+    if fmt not in set(cfg["allowed_formats"]):
+        raise HTTPException(status_code=400, detail=f"Unsupported image format: {fmt}")
+
+    return {"width": w, "height": h, "format": fmt}
+
+def strip_metadata_and_reencode(img: Image.Image) -> Tuple[bytes, Dict[str, Any]]:
+    cfg = POLICY["image"]
+    target_fmt = cfg["reencode_format"].upper()
+
+    clean = Image.new(img.mode, img.size)
+    clean.putdata(list(img.getdata()))
+
+    out = io.BytesIO()
+    save_kwargs = {}
+    if target_fmt == "JPEG":
+        if clean.mode in ("RGBA", "LA"):
+            clean = clean.convert("RGB")
+        save_kwargs.update({"quality": 95, "optimize": True})
+
+    clean.save(out, format=target_fmt, **save_kwargs)
+    sanitized_bytes = out.getvalue()
+
+    info = {
+        "metadata_stripped": True,
+        "reencoded": True,
+        "reencode_format": target_fmt,
+        "sanitized_bytes": len(sanitized_bytes),
+    }
+    return sanitized_bytes, info
+
+
+# -----------------------------
+# OCR preprocess (optional)
+# -----------------------------
+def preprocess_for_ocr(pil_img: Image.Image):
+    if np is None or cv2 is None:
+        raise RuntimeError("OCR preprocess requires numpy and opencv-python(-headless)")
+
+    img = np.array(pil_img)
+    if img.ndim == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    img = cv2.bilateralFilter(img, 7, 50, 50)
+    img = cv2.adaptiveThreshold(
+        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+    )
+    return img
+
+
+# -----------------------------
+# OCR with boxes (Phase 2 – required for image redaction)
+# -----------------------------
+def ocr_with_boxes(pil_img: Image.Image) -> Dict[str, Any]:
+    cfg = POLICY.get("ocr", {})
+    if not cfg.get("enabled", False):
+        return {"enabled": False, "tokens": [], "text": "", "text_len": 0, "is_error": False, "message": None}
+
+    if pytesseract is None:
+        return {"enabled": True, "is_error": True, "message": "pytesseract not installed", "tokens": [], "text": "", "text_len": 0}
+
+    try:
+        pil_img2 = pil_img.convert("RGB")
+        if cfg.get("autocontrast", True):
+            pil_img2 = ImageOps.autocontrast(pil_img2)
+
+        if cfg.get("preprocess", False):
+            arr = preprocess_for_ocr(pil_img2)
+            data = pytesseract.image_to_data(arr, output_type=pytesseract.Output.DICT)
+        else:
+            data = pytesseract.image_to_data(pil_img2, output_type=pytesseract.Output.DICT)
+
+        tokens = []
+        parts = []
+        n = len(data.get("text", []))
+
+        for i in range(n):
+            txt = (data["text"][i] or "").strip()
+            if not txt:
+                continue
+
+            conf_raw = data.get("conf", ["-1"])[i]
+            try:
+                conf = float(conf_raw)
+            except Exception:
+                conf = -1.0
+
+            tokens.append({
+                "text": txt,
+                "conf": conf,
+                "left": int(data["left"][i]),
+                "top": int(data["top"][i]),
+                "width": int(data["width"][i]),
+                "height": int(data["height"][i]),
+                "block_num": int(data.get("block_num", [0])[i]),
+                "par_num": int(data.get("par_num", [0])[i]),
+                "line_num": int(data.get("line_num", [0])[i]),
+                "word_num": int(data.get("word_num", [0])[i]),
+            })
+            parts.append(txt)
+
+        full_text = " ".join(parts).strip()
+        return {"enabled": True, "is_error": False, "message": None, "tokens": tokens, "text": full_text, "text_len": len(full_text)}
+    except Exception as e:
+        return {"enabled": True, "is_error": True, "message": str(e), "tokens": [], "text": "", "text_len": 0}
+
+
+def _group_tokens_by_line(tokens: List[Dict[str, Any]]):
+    lines = {}
+    for t in tokens:
+        key = (t["block_num"], t["par_num"], t["line_num"])
+        lines.setdefault(key, []).append(t)
+    for k in lines:
+        lines[k] = sorted(lines[k], key=lambda x: x["left"])
+    return lines
+
+
+def _compile_pii_patterns() -> List[Tuple[str, re.Pattern]]:
+    pii_cfg = POLICY.get("pii", {})
+    if not pii_cfg.get("enabled", False):
+        return []
+    compiled = []
+    for name, pat in (pii_cfg.get("patterns", {}) or {}).items():
+        try:
+            compiled.append((name, re.compile(pat, re.IGNORECASE)))
+        except re.error:
+            continue
+    return compiled
+
+
+def find_pii_boxes_from_tokens(tokens: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Finds PII occurrences in OCR tokens using line reconstruction.
+    Returns list of redaction boxes.
+    """
+    red_cfg = POLICY.get("pii_image_redaction", {})
+    if not red_cfg.get("enabled", False):
+        return []
+
+    min_conf = float(red_cfg.get("min_ocr_confidence", 50))
+    compiled = _compile_pii_patterns()
+    if not compiled:
+        return []
+
+    boxes = []
+    lines = _group_tokens_by_line(tokens)
+
+    for _, line_tokens in lines.items():
+        lt = [t for t in line_tokens if t["conf"] >= min_conf]
+        if not lt:
+            continue
+
+        # Build line string + mapping spans->token indexes
+        line_parts = []
+        spans = []   # (start, end, token_index)
+        cursor = 0
+
+        for idx, tok in enumerate(lt):
+            if line_parts:
+                line_parts.append(" ")
+                cursor += 1
+            start = cursor
+            piece = tok["text"]
+            line_parts.append(piece)
+            cursor += len(piece)
+            end = cursor
+            spans.append((start, end, idx))
+
+        line_text = "".join(line_parts)
+
+        for p_name, rgx in compiled:
+            for m in rgx.finditer(line_text):
+                ms, me = m.start(), m.end()
+                hit_idxs = []
+                for s, e, tidx in spans:
+                    if not (e <= ms or s >= me):
+                        hit_idxs.append(tidx)
+                if not hit_idxs:
+                    continue
+
+                left = min(lt[i]["left"] for i in hit_idxs)
+                top = min(lt[i]["top"] for i in hit_idxs)
+                right = max(lt[i]["left"] + lt[i]["width"] for i in hit_idxs)
+                bottom = max(lt[i]["top"] + lt[i]["height"] for i in hit_idxs)
+
+                boxes.append({
+                    "type": p_name,
+                    "match": m.group(0),
+                    "left": left, "top": top, "right": right, "bottom": bottom
+                })
+
+    return boxes
+
+
+def _draw_hatch(draw: ImageDraw.ImageDraw, l: int, t: int, r: int, b: int,
+                spacing: int, width: int, color, angle_deg: int = 45):
+    """
+    Draw cross-hatch inside rectangle [l,t,r,b].
+    We draw two sets of diagonal lines: // and \\ to create X-hatch.
+    """
+    # Normalize
+    spacing = max(4, int(spacing))
+    width = max(1, int(width))
+
+    # Diagonal "/" lines: from left edge upward to top edge, then across
+    # We'll sweep an intercept value across the bounding box.
+    # For "/" lines, points satisfy x + y = k (in rotated coordinates).
+    # Simple way: iterate start points along left and bottom borders.
+    w = r - l
+    h = b - t
+
+    # "/" direction (bottom-left to top-right)
+    # Start along bottom edge
+    x = l
+    while x <= r:
+        x0, y0 = x, b
+        x1, y1 = x - h, t
+        # clip to box
+        if x1 < l:
+            y1 = t + (l - x1)
+            x1 = l
+        if x0 > r:
+            y0 = b - (x0 - r)
+            x0 = r
+        draw.line([(x0, y0), (x1, y1)], fill=color, width=width)
+        x += spacing
+    # Start along left edge (excluding bottom corner already covered)
+    y = b - spacing
+    while y >= t:
+        x0, y0 = l, y
+        x1, y1 = l + h, t
+        if x1 > r:
+            y1 = t + (x1 - r)
+            x1 = r
+        draw.line([(x0, y0), (x1, y1)], fill=color, width=width)
+        y -= spacing
+
+    # "\" direction (top-left to bottom-right)
+    # Start along top edge
+    x = l
+    while x <= r:
+        x0, y0 = x, t
+        x1, y1 = x + h, b
+        if x1 > r:
+            y1 = b - (x1 - r)
+            x1 = r
+        draw.line([(x0, y0), (x1, y1)], fill=color, width=width)
+        x += spacing
+    # Start along left edge (excluding top corner already covered)
+    y = t + spacing
+    while y <= b:
+        x0, y0 = l, y
+        x1, y1 = l + w, y + w
+        # clip by bottom
+        if y1 > b:
+            x1 = l + (b - y0)
+            y1 = b
+        if x1 > r:
+            y1 = y0 + (r - x0)
+            x1 = r
+        draw.line([(x0, y0), (x1, y1)], fill=color, width=width)
+        y += spacing
+
+
+def redact_image(pil_img: Image.Image, boxes: List[Dict[str, Any]]) -> Image.Image:
+    """
+    Applies redaction to bounding boxes.
+    Styles supported (policy pii_image_redaction.style):
+      - blur   : blur the region (existing behavior)
+      - solid  : opaque rectangle fill
+      - x_hatch: opaque fill + cross-hatch lines
+    """
+    cfg = POLICY.get("pii_image_redaction", {})
+    style = (cfg.get("style", "blur") or "blur").lower()
+
+    blur_radius = int(cfg.get("blur_radius", 10))
+    expand = int(cfg.get("expand_px", 3))
+
+    fill_color = cfg.get("fill_color", [0, 0, 0])
+    hatch_color = cfg.get("hatch_color", [255, 255, 255])
+    hatch_spacing = int(cfg.get("hatch_spacing", 10))
+    hatch_width = int(cfg.get("hatch_width", 2))
+
+    fill_color = tuple(fill_color) if isinstance(fill_color, list) else fill_color
+    hatch_color = tuple(hatch_color) if isinstance(hatch_color, list) else hatch_color
+
+    redacted = pil_img.copy().convert("RGB")
+    draw = ImageDraw.Draw(redacted)
+
+    for b in boxes:
+        l = max(0, b["left"] - expand)
+        t = max(0, b["top"] - expand)
+        r = min(redacted.width, b["right"] + expand)
+        bot = min(redacted.height, b["bottom"] + expand)
+        if r <= l or bot <= t:
+            continue
+
+        if style == "blur":
+            region = redacted.crop((l, t, r, bot))
+            region = region.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            redacted.paste(region, (l, t))
+            continue
+
+        # solid or x_hatch: paint background first
+        draw.rectangle([l, t, r, bot], fill=fill_color)
+
+        if style == "solid":
+            continue
+
+        if style == "x_hatch":
+            _draw_hatch(draw, l, t, r, bot,
+                        spacing=hatch_spacing,
+                        width=hatch_width,
+                        color=hatch_color)
+
+    return redacted
+
+
+
+# -----------------------------
+# Other Phase-2 detectors (text policy)
+# -----------------------------
+def _contains_any(text: str, phrases: List[str]) -> List[str]:
+    t = (text or "").lower()
+    hits = []
+    for p in phrases or []:
+        if p.lower() in t:
+            hits.append(p)
+    return hits
+
+
+def detect_sensitive_policy_text(ocr_text: str) -> Dict[str, Any]:
+    cfg = POLICY.get("sensitive_policy_text", {})
+    if not cfg.get("enabled", False):
+        return {"enabled": False, "hits": [], "action": None}
+    hits = _contains_any(ocr_text, cfg.get("phrases", []))
+    return {"enabled": True, "hits": hits, "action": cfg.get("action", "QUARANTINE") if hits else None}
+
+
+def detect_denied_topics(ocr_text: str, user_text: str) -> Dict[str, Any]:
+    cfg = POLICY.get("denied_topics", {})
+    if not cfg.get("enabled", False):
+        return {"enabled": False, "hits": [], "action": None}
+    combined = f"{ocr_text}\n{user_text}"
+    hits = _contains_any(combined, cfg.get("phrases", []))
+    return {"enabled": True, "hits": hits, "action": cfg.get("action", "BLOCK") if hits else None}
+
+
+def detect_pii_text(text: str) -> Dict[str, Any]:
+    pii_cfg = POLICY.get("pii", {})
+    if not pii_cfg.get("enabled", False):
+        return {"enabled": False, "entities": [], "sanitized_text": text}
+
+    entities = []
+    sanitized = text
+    for name, pat in (pii_cfg.get("patterns", {}) or {}).items():
+        try:
+            rgx = re.compile(pat, re.IGNORECASE)
+        except re.error:
+            continue
+
+        for m in rgx.finditer(text or ""):
+            entities.append({"type": name, "match": m.group(0)})
+
+        sanitized = rgx.sub(f"[REDACTED_{name.upper()}]", sanitized)
+
+    return {"enabled": True, "entities": entities, "sanitized_text": sanitized}
+
+
+# -----------------------------
+# Decision engine (Phase-2)
+# -----------------------------
+def policy_decide(signals: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    decision = "ALLOW"
+    reasons = []
+
+    # Denied topics -> BLOCK
+    dt = signals.get("denied_topics", {})
+    if dt.get("enabled") and dt.get("hits"):
+        decision = "BLOCK"
+        reasons.append({"policy": "denied_topics", "hits": dt["hits"]})
+
+    # Sensitive policy text -> QUARANTINE/WARN
+    spt = signals.get("sensitive_policy_text", {})
+    if spt.get("enabled") and spt.get("hits") and decision != "BLOCK":
+        decision = spt.get("action", "QUARANTINE")
+        reasons.append({"policy": "sensitive_policy_text", "hits": spt["hits"]})
+
+    # PII -> REDACT if not BLOCK
+    pii_any = signals.get("pii_any", {})
+    if pii_any.get("enabled") and pii_any.get("entities"):
+        if decision != "BLOCK":
+            decision = "REDACT"
+        reasons.append({"policy": "pii", "types": list({e["type"] for e in pii_any["entities"]})})
+
+    allow_send_to_llm = decision in ("ALLOW", "WARN", "QUARANTINE", "REDACT")
+    if decision == "BLOCK":
+        allow_send_to_llm = False
+
+    safe_map = POLICY.get("decision_safety", {"ALLOW": True, "WARN": True, "QUARANTINE": False, "REDACT": False, "BLOCK": False})
+    is_safe = bool(safe_map.get(decision, decision == "ALLOW"))
+
+    actions = {
+        "allow_send_to_llm": allow_send_to_llm,
+        "reason_codes": reasons,
+        "sanitized_user_text": signals.get("pii_user", {}).get("sanitized_text"),
+        "sanitized_ocr_text": signals.get("pii_ocr", {}).get("sanitized_text"),
+        "use_redacted_image": bool(signals.get("redacted_image_sha256")),
+        "redacted_image_sha256": signals.get("redacted_image_sha256"),
+        "pii_image_boxes": signals.get("pii_image_boxes", []),
+        "is_safe_semantics": safe_map
+    }
+    return decision, {"is_safe": is_safe, **actions}
+
+
+# -----------------------------
+# FastAPI app
+# -----------------------------
+app = FastAPI(title="Offline Image Guardrail Gateway", version="0.4.0")
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"error": type(exc).__name__, "message": str(exc)})
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "version": app.version, "policy_keys": list(POLICY.keys())}
+
+
+def _process_image_and_redact(raw: bytes, user_text: str) -> Dict[str, Any]:
+    """
+    Shared core pipeline for both endpoints:
+    - validate + sanitize image
+    - OCR with boxes
+    - PII text detection
+    - image redaction (PII)
+    - policy decision
+    Returns dict with everything needed.
+    """
+    img = safe_open_image(raw)
+    meta_in = validate_image(img, raw)
+
+    sanitized_bytes, sanitize_info = strip_metadata_and_reencode(img)
+    sanitized_hash = sha256_bytes(sanitized_bytes)
+
+    s_img = safe_open_image(sanitized_bytes)
+
+    # OCR with boxes (needed for redaction)
+    ocr_res = ocr_with_boxes(s_img)
+    ocr_text = ocr_res.get("text", "")
+    tokens = ocr_res.get("tokens", [])
+
+    # PII detection in text fields
+    pii_user = detect_pii_text(user_text)
+    pii_ocr = detect_pii_text(ocr_text)
+    pii_entities_all = (pii_user.get("entities", []) + pii_ocr.get("entities", []))
+
+    # PII redaction on image using OCR boxes
+    pii_boxes = find_pii_boxes_from_tokens(tokens)
+    redacted_img_bytes = None
+    redacted_sha = None
+
+    if pii_boxes:
+        redacted_img = redact_image(s_img, pii_boxes)
+        redacted_img_bytes = pil_to_png_bytes(redacted_img)
+        redacted_sha = sha256_bytes(redacted_img_bytes)
+
+    # Policy detectors
+    denied_topics = detect_denied_topics(ocr_text, user_text)
+    sensitive_policy_text = detect_sensitive_policy_text(ocr_text)
+
+    signals = {
+        "denied_topics": {"enabled": denied_topics.get("enabled", False), "hits": denied_topics.get("hits", [])},
+        "sensitive_policy_text": {"enabled": sensitive_policy_text.get("enabled", False), "hits": sensitive_policy_text.get("hits", []), "action": sensitive_policy_text.get("action")},
+        "pii_user": pii_user,
+        "pii_ocr": pii_ocr,
+        "pii_any": {"enabled": True, "entities": pii_entities_all},
+        "pii_image_boxes": [
+            {"type": b["type"], "left": b["left"], "top": b["top"], "right": b["right"], "bottom": b["bottom"]}
+            for b in pii_boxes
+        ],
+        "redacted_image_sha256": redacted_sha
+    }
+
+    decision, actions = policy_decide(signals)
+
+    # include redacted image as base64 only if enabled (debugging)
+    red_cfg = POLICY.get("pii_image_redaction", {})
+    if red_cfg.get("return_redacted_image_base64", False) and redacted_img_bytes:
+        actions["redacted_image_base64"] = base64.b64encode(redacted_img_bytes).decode("ascii")
+
+    results = {
+        "validate_image": {"is_pass": True, "details": meta_in},
+        "ocr": {
+            "enabled": ocr_res.get("enabled", False),
+            "is_error": ocr_res.get("is_error", False),
+            "message": ocr_res.get("message"),
+            "text_len": ocr_res.get("text_len", 0),
+            "text": ocr_text if POLICY.get("logging", {}).get("log_ocr_text", False) else None
+        },
+        "denied_topics": denied_topics,
+        "sensitive_policy_text": sensitive_policy_text,
+        "pii_user": {"entities": pii_user.get("entities", []), "sanitized_text": pii_user.get("sanitized_text")},
+        "pii_ocr": {"entities": pii_ocr.get("entities", []), "sanitized_text": pii_ocr.get("sanitized_text")},
+        "pii_image_boxes": signals["pii_image_boxes"],
+    }
+
+    return {
+        "meta_in": meta_in,
+        "sanitized_bytes": sanitized_bytes,
+        "sanitized_sha256": sanitized_hash,
+        "sanitize_info": sanitize_info,
+        "ocr_res": ocr_res,
+        "ocr_text": ocr_text,
+        "decision": decision,
+        "actions": actions,
+        "results": results,
+        "redacted_img_bytes": redacted_img_bytes,
+        "redacted_sha256": redacted_sha
+    }
+
+
+@app.post("/v1/guardrails/image", response_model=GuardrailResult)
+async def guardrail_image(
+    image: UploadFile = File(...),
+    user_text: str = Form(default="")
+):
+    t0 = time.time()
+    raw = await image.read()
+    raw_hash = sha256_bytes(raw)
+
+    out = _process_image_and_redact(raw, user_text)
+
+    sanitized = {
+        "input_sha256": raw_hash,
+        "sanitized_sha256": out["sanitized_sha256"],
+        "input_bytes": len(raw),
+        **out["sanitize_info"],
+    }
+    if out["redacted_sha256"]:
+        sanitized["redacted_sha256"] = out["redacted_sha256"]
+
+    return GuardrailResult(
+        decision=out["decision"],
+        is_safe=bool(out["actions"].get("is_safe", False)),
+        results=out["results"],
+        actions=out["actions"],
+        sanitized=sanitized,
+        meta={
+            "processing_ms": int((time.time() - t0) * 1000),
+            "gateway_version": app.version
+        }
+    )
+
+
+@app.post("/v1/guardrails/image/redacted")
+async def guardrail_image_redacted(
+    image: UploadFile = File(...),
+    user_text: str = Form(default="")
+):
+    """
+    Returns the REDACTED PNG image bytes (or sanitized PNG if no redaction needed).
+    Use this in automated tests:
+      curl -X POST ... --output redacted.png
+    """
+    raw = await image.read()
+    out = _process_image_and_redact(raw, user_text)
+
+    if out["redacted_img_bytes"]:
+        return Response(content=out["redacted_img_bytes"], media_type="image/png")
+
+    # If no redaction, return sanitized image
+    return Response(content=out["sanitized_bytes"], media_type="image/png")
+

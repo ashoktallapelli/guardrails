@@ -20,6 +20,37 @@ Usage:
         pass
 """
 
+# Set HuggingFace env vars BEFORE any imports to prevent SSL errors
+import os
+import sys
+from pathlib import Path
+
+def _early_setup():
+    """Set environment variables before HuggingFace imports."""
+    config_path = Path("config.yaml")
+    if config_path.exists():
+        import yaml
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+        env = config.get("environment", {})
+        if env.get("hf_hub_offline"):
+            os.environ["HF_HUB_OFFLINE"] = "1"
+        if env.get("transformers_offline"):
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        if env.get("hf_hub_disable_implicit_token"):
+            os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+
+    # Fix SSL on Windows
+    if sys.platform == 'win32':
+        try:
+            import certifi
+            os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+            os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+        except ImportError:
+            pass
+
+_early_setup()
+
 __version__ = "1.0.0"
 
 from guardrails.config import load_config

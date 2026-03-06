@@ -111,8 +111,8 @@ log_file_path: "guardrails_audit.log"
 fail_closed: false        # true = reject on errors, false = allow on errors
 
 # Environment settings (for HuggingFace/Transformers)
-# Set to false if you need to download models
+# Set to true after models are downloaded to prevent network calls
 environment:
-  hf_hub_offline: false              # Use cached models only (no network)
-  transformers_offline: false        # Transformers offline mode
-  hf_hub_disable_implicit_token: false  # Disable token checks
+  hf_hub_offline: true               # Use cached models only (no network)
+  transformers_offline: true         # Transformers offline mode
+  hf_hub_disable_implicit_token: true  # Disable token checks

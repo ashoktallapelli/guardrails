@@ -1,0 +1,11 @@
+Name,Type,Data to be sanitized,Type of masking(zeroed/masked/blacked out),Tools link,Paid/free,Comments,References
+OpenNSFW2,Python library,NSFW/Adult content in images,Block/Reject,https://github.com/bhky/opennsfw2,free,Downloads weights (~24MB) from GitHub on first run; tested and working,Yahoo Open NSFW
+CLIP (OpenAI),Python library (transformers),Violence/Weapons/Disturbing content in images,Block/Reject,https://huggingface.co/openai/clip-vit-base-patch32,free,Downloads model (~600MB) from HuggingFace; blocked due to network/SSL issue,OpenAI CLIP
+Presidio Image Redactor,Python library,PII in images (SSN/Credit Cards/Phone/Names),Blacked out,https://github.com/microsoft/presidio,free,Uses Tesseract OCR + Presidio analyzer; masks PII with black boxes; tested and working,Microsoft Presidio
+Tesseract OCR,System library + Python wrapper,Text extraction from images,N/A,https://github.com/tesseract-ocr/tesseract,free,Required by Presidio; install via brew/apt/installer; tested and working,Google Tesseract
+OpenCV,Python library,Faces in images,Blurred (Gaussian),https://github.com/opencv/opencv,free,Haar cascade face detection; no external download needed; tested and working,OpenCV
+python-magic (libmagic),Python library + System library,File type validation by content,Block/Reject,https://github.com/ahupp/python-magic,free,Validates magic bytes not extension; requires libmagic; tested and working,libmagic
+BLIP (Salesforce),Python library (transformers),Image captioning and Q&A,N/A,https://huggingface.co/Salesforce/blip-image-captioning-base,free,Downloads model (~1GB) from HuggingFace; blocked due to network/SSL issue,Salesforce BLIP
+spaCy (en_core_web_lg),Python library,NLP for PII name/entity detection,N/A,https://github.com/explosion/spacy-models,free,Required by Presidio; downloads from GitHub (~500MB); tested and working,spaCy
+CLIP (Hate Symbol Detection),Python library (transformers),Hate symbols/extremist imagery,Block/Reject,https://huggingface.co/openai/clip-vit-base-patch32,free,CLIP zero-shot classification for nazi/racist symbols; reuses violence check model,OpenAI CLIP
+Tesseract OCR (Prompt Injection),System library + Python wrapper,Prompt injection attacks in images,Block/Reject,https://github.com/tesseract-ocr/tesseract,free,OCR extracts text then keyword/regex matching for injection patterns,Google Tesseract
