@@ -22,14 +22,13 @@ Usage:
 
 __version__ = "1.0.0"
 
-from guardrails.config import load_config, get_default_config
+from guardrails.config import load_config
 from guardrails.pipeline import Pipeline, AVAILABLE_CHECKS
 from guardrails.base import BaseCheck, CheckResult
 
 __all__ = [
     "Pipeline",
     "load_config",
-    "get_default_config",
     "BaseCheck",
     "CheckResult",
     "AVAILABLE_CHECKS",

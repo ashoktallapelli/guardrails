@@ -27,6 +27,7 @@ from PIL import Image
 
 from guardrails.config import load_config
 from guardrails.pipeline import Pipeline
+from guardrails import model_cache
 
 # Configure logging
 logging.basicConfig(
@@ -104,12 +105,21 @@ async def lifespan(app: FastAPI):
         _config = load_config()
         _pipeline = Pipeline(_config)
         logger.info("Configuration and pipeline loaded successfully")
+
+        # Preload models by running a dummy check
+        logger.info("Preloading models...")
+        dummy_img = Image.new('RGB', (100, 100), color='white')
+        _pipeline.run(dummy_img, input_type="image")
+        logger.info("Models preloaded successfully")
+
     except FileNotFoundError as e:
         logger.error(f"Config file not found: {e}")
         raise
 
     yield
 
+    # Cleanup
+    model_cache.clear()
     logger.info("Shutting down API server")
 
 

@@ -10,12 +10,10 @@ Handles both image PII (OCR + Presidio) and text PII:
 import logging
 from typing import Any, Dict
 
-from guardrails.base import BaseCheck, CheckResult
+from guardrails.base import BaseCheck, CheckResult, fail_result
+from guardrails import model_cache
 
 logger = logging.getLogger(__name__)
-
-# Model cache
-_model_cache = {}
 
 
 class PIICheck(BaseCheck):
@@ -44,6 +42,8 @@ class PIICheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
+        self._fail_closed = config.get("fail_closed", False)
+
         # Determine if input is image or text
         if isinstance(input_data, str):
             return self._check_text(input_data, config)
@@ -56,13 +56,7 @@ class PIICheck(BaseCheck):
             import pytesseract
             from presidio_analyzer import AnalyzerEngine
         except ImportError:
-            logger.warning("pytesseract or presidio-analyzer not installed, skipping PII detection")
-            return CheckResult(
-                safe=True,
-                score=0.0,
-                action="allow",
-                details={"skipped": True, "reason": "dependencies not installed"}
-            )
+            return fail_result(self.name, "pytesseract or presidio-analyzer not installed", self._fail_closed)
 
         try:
             # Extract text using OCR
@@ -77,10 +71,10 @@ class PIICheck(BaseCheck):
                 )
 
             # Analyze text for PII
-            if "text_analyzer" not in _model_cache:
-                _model_cache["text_analyzer"] = AnalyzerEngine()
+            if not model_cache.has("text_analyzer"):
+                model_cache.set("text_analyzer", AnalyzerEngine())
 
-            analyzer = _model_cache["text_analyzer"]
+            analyzer = model_cache.get("text_analyzer")
             language = config.get("pii_language", "en")
             results = analyzer.analyze(
                 text=extracted_text,
@@ -116,21 +110,14 @@ class PIICheck(BaseCheck):
             )
 
         except Exception as e:
-            logger.warning(f"PII detection failed: {e}")
-            return CheckResult(safe=True, score=0.0, action="allow", details={"error": str(e)})
+            return fail_result(self.name, str(e), self._fail_closed)
 
     def _check_text(self, text: str, config: Dict[str, Any]) -> CheckResult:
         """Detect PII in text using Presidio."""
         try:
             from presidio_analyzer import AnalyzerEngine
         except ImportError:
-            logger.warning("presidio-analyzer not installed, skipping text PII detection")
-            return CheckResult(
-                safe=True,
-                score=0.0,
-                action="allow",
-                details={"skipped": True, "reason": "presidio not installed"}
-            )
+            return fail_result(self.name, "presidio-analyzer not installed", self._fail_closed)
 
         if not text or not text.strip():
             return CheckResult(
@@ -141,10 +128,10 @@ class PIICheck(BaseCheck):
             )
 
         try:
-            if "text_analyzer" not in _model_cache:
-                _model_cache["text_analyzer"] = AnalyzerEngine()
+            if not model_cache.has("text_analyzer"):
+                model_cache.set("text_analyzer", AnalyzerEngine())
 
-            analyzer = _model_cache["text_analyzer"]
+            analyzer = model_cache.get("text_analyzer")
             language = config.get("pii_language", "en")
             results = analyzer.analyze(
                 text=text,
@@ -179,8 +166,7 @@ class PIICheck(BaseCheck):
             )
 
         except Exception as e:
-            logger.warning(f"Text PII detection failed: {e}")
-            return CheckResult(safe=True, score=0.0, action="allow", details={"error": str(e)})
+            return fail_result(self.name, str(e), self._fail_closed)
 
     def redact(self, input_data, config: Dict[str, Any]):
         """
@@ -229,13 +215,13 @@ class PIICheck(BaseCheck):
             return text
 
         try:
-            if "text_analyzer" not in _model_cache:
-                _model_cache["text_analyzer"] = AnalyzerEngine()
-            if "text_anonymizer" not in _model_cache:
-                _model_cache["text_anonymizer"] = AnonymizerEngine()
+            if not model_cache.has("text_analyzer"):
+                model_cache.set("text_analyzer", AnalyzerEngine())
+            if not model_cache.has("text_anonymizer"):
+                model_cache.set("text_anonymizer", AnonymizerEngine())
 
-            analyzer = _model_cache["text_analyzer"]
-            anonymizer = _model_cache["text_anonymizer"]
+            analyzer = model_cache.get("text_analyzer")
+            anonymizer = model_cache.get("text_anonymizer")
 
             language = config.get("pii_language", "en")
             default_operator = config.get("pii_operator", "replace")

@@ -8,14 +8,14 @@ Uses CLIP zero-shot classification to detect:
 """
 
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict
 
-from guardrails.base import BaseCheck, CheckResult
+from guardrails.base import BaseCheck, CheckResult, fail_result
+from guardrails import model_cache
 
 logger = logging.getLogger(__name__)
-
-# Model cache (shared with violence check)
-_model_cache = {}
 
 
 class HateSymbolsCheck(BaseCheck):
@@ -44,47 +44,45 @@ class HateSymbolsCheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
+        fail_closed = config.get("fail_closed", False)
+
         try:
             from transformers import CLIPProcessor, CLIPModel
             import torch
         except ImportError:
-            logger.warning("transformers/torch not installed, skipping hate symbol check")
-            return CheckResult(
-                safe=True,
-                score=0.0,
-                action="allow",
-                details={"skipped": True, "reason": "dependencies not installed"}
-            )
+            return fail_result(self.name, "transformers/torch not installed", fail_closed)
 
-        # Load CLIP model (shared with violence check)
-        model_name = "openai/clip-vit-base-patch32"
+        # Load CLIP model (shared with violence check) - use config path if provided
+        model_paths = config.get("model_paths", {})
+        model_name = model_paths.get("clip") or "openai/clip-vit-base-patch32"
 
-        if "clip_model" not in _model_cache:
-            logger.info("Loading CLIP model for hate symbol detection...")
+        # Expand user path and env vars if local path provided (Windows: %USERPROFILE%)
+        if model_paths.get("clip"):
+            model_name = os.path.expandvars(model_name)
+            model_name = str(Path(model_name).expanduser())
+
+        if not model_cache.has("clip_model"):
+            logger.info(f"Loading CLIP model from: {model_name}")
             try:
-                _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name, local_files_only=True)
-                _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name, local_files_only=True)
+                model_cache.set("clip_model", CLIPModel.from_pretrained(model_name, local_files_only=True))
+                model_cache.set("clip_processor", CLIPProcessor.from_pretrained(model_name, local_files_only=True))
                 logger.info("Loaded CLIP model from local cache")
             except Exception:
                 logger.info("Model not in local cache, trying to download...")
                 try:
-                    _model_cache["clip_model"] = CLIPModel.from_pretrained(model_name)
-                    _model_cache["clip_processor"] = CLIPProcessor.from_pretrained(model_name)
+                    model_cache.set("clip_model", CLIPModel.from_pretrained(model_name))
+                    model_cache.set("clip_processor", CLIPProcessor.from_pretrained(model_name))
                 except Exception as e:
                     logger.warning(f"Cannot load CLIP model: {e}")
-                    _model_cache["clip_unavailable"] = True
-                    return CheckResult(
-                        safe=True,
-                        score=0.0,
-                        action="allow",
-                        details={"skipped": True, "reason": "model unavailable"}
-                    )
+                    logger.warning("Set model_paths.clip in config.yaml to specify custom path")
+                    model_cache.set("clip_unavailable", True)
+                    return fail_result(self.name, f"model unavailable: {e}", fail_closed)
 
-        if _model_cache.get("clip_unavailable"):
-            return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
+        if model_cache.get("clip_unavailable"):
+            return fail_result(self.name, "model unavailable", fail_closed)
 
-        model = _model_cache["clip_model"]
-        processor = _model_cache["clip_processor"]
+        model = model_cache.get("clip_model")
+        processor = model_cache.get("clip_processor")
 
         # Hate symbol labels for zero-shot classification
         hate_labels = [
@@ -141,10 +139,4 @@ class HateSymbolsCheck(BaseCheck):
             )
 
         except Exception as e:
-            logger.warning(f"Hate symbol check failed: {e}")
-            return CheckResult(
-                safe=True,
-                score=0.0,
-                action="allow",
-                details={"error": str(e)}
-            )
+            return fail_result(self.name, str(e), fail_closed)

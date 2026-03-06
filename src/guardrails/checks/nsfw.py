@@ -7,15 +7,14 @@ Supports two models:
 """
 
 import logging
+import os
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
-from guardrails.base import BaseCheck, CheckResult
+from guardrails.base import BaseCheck, CheckResult, fail_result
+from guardrails import model_cache
 
 logger = logging.getLogger(__name__)
-
-# Model cache (shared across instances)
-_model_cache = {}
 
 
 class NSFWCheck(BaseCheck):
@@ -45,11 +44,18 @@ class NSFWCheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
-        if self.model_type == "adamcodd":
-            is_safe, score = self._check_adamcodd(input_data, config)
-        else:
-            is_safe, score = self._check_opennsfw2(input_data, config)
+        fail_closed = config.get("fail_closed", False)
 
+        if self.model_type == "adamcodd":
+            result = self._check_adamcodd(input_data, config, fail_closed)
+        else:
+            result = self._check_opennsfw2(input_data, config, fail_closed)
+
+        # If helper returned a CheckResult (error case), return it directly
+        if isinstance(result, CheckResult):
+            return result
+
+        is_safe, score = result
         action = "allow" if is_safe else "reject"
         reason = None if is_safe else f"NSFW score {score:.2f} >= threshold {self.threshold}"
 
@@ -62,22 +68,27 @@ class NSFWCheck(BaseCheck):
             details={"model": self.model_type}
         )
 
-    def _check_opennsfw2(self, img, config: Dict[str, Any]) -> Tuple[bool, float]:
+    def _check_opennsfw2(self, img, config: Dict[str, Any], fail_closed: bool) -> Union[Tuple[bool, float], CheckResult]:
         """Run NSFW detection using OpenNSFW2."""
         try:
             import opennsfw2 as n2
         except ImportError:
-            logger.warning("opennsfw2 not installed, skipping NSFW check")
-            return True, 0.0
+            return fail_result(self.name, "opennsfw2 not installed", fail_closed)
 
-        # Check for local weights file
-        home = Path.home()
-        weights_path = home / ".opennsfw2" / "weights" / "open_nsfw_weights.h5"
+        # Check for local weights file - use config path if provided
+        model_paths = config.get("model_paths", {})
+        if model_paths.get("opennsfw2"):
+            # Support ~ and environment variables (Windows: %USERPROFILE%)
+            path_str = os.path.expandvars(model_paths["opennsfw2"])
+            weights_path = Path(path_str).expanduser()
+        else:
+            home = Path.home()
+            weights_path = home / ".opennsfw2" / "weights" / "open_nsfw_weights.h5"
 
         if not weights_path.exists():
             logger.warning(f"NSFW weights not found at {weights_path}")
             logger.warning("Download from: https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_weights.h5")
-            return True, 0.0
+            return fail_result(self.name, f"weights not found at {weights_path}", fail_closed)
 
         try:
             score = float(n2.predict_image(img, weights_path=str(weights_path)))
@@ -85,45 +96,50 @@ class NSFWCheck(BaseCheck):
             logger.info(f"NSFW score: {score:.4f} (threshold: {self.threshold})")
             return is_safe, score
         except Exception as e:
-            logger.warning(f"NSFW check failed: {e}")
-            return True, 0.0
+            return fail_result(self.name, str(e), fail_closed)
 
-    def _check_adamcodd(self, img, config: Dict[str, Any]) -> Tuple[bool, float]:
+    def _check_adamcodd(self, img, config: Dict[str, Any], fail_closed: bool) -> Union[Tuple[bool, float], CheckResult]:
         """Run NSFW detection using AdamCodd/vit-base-nsfw-detector."""
         try:
             from transformers import AutoImageProcessor, AutoModelForImageClassification
             import torch
         except ImportError:
-            logger.warning("transformers/torch not installed, skipping NSFW check")
-            return True, 0.0
+            return fail_result(self.name, "transformers/torch not installed", fail_closed)
 
-        model_name = "AdamCodd/vit-base-nsfw-detector"
+        # Use config path if provided, otherwise use HuggingFace model name
+        model_paths = config.get("model_paths", {})
+        model_name = model_paths.get("adamcodd") or "AdamCodd/vit-base-nsfw-detector"
 
-        if "nsfw_adamcodd_model" not in _model_cache:
-            logger.info("Loading AdamCodd NSFW model...")
+        # Expand user path and env vars if local path provided
+        if model_paths.get("adamcodd"):
+            model_name = os.path.expandvars(model_name)
+            model_name = str(Path(model_name).expanduser())
+
+        if not model_cache.has("nsfw_adamcodd_model"):
+            logger.info(f"Loading AdamCodd NSFW model from: {model_name}")
             try:
-                _model_cache["nsfw_adamcodd_processor"] = AutoImageProcessor.from_pretrained(
+                model_cache.set("nsfw_adamcodd_processor", AutoImageProcessor.from_pretrained(
                     model_name, local_files_only=True
-                )
-                _model_cache["nsfw_adamcodd_model"] = AutoModelForImageClassification.from_pretrained(
+                ))
+                model_cache.set("nsfw_adamcodd_model", AutoModelForImageClassification.from_pretrained(
                     model_name, local_files_only=True
-                )
+                ))
                 logger.info("Loaded AdamCodd NSFW model from local cache")
             except Exception:
                 logger.info("Model not in local cache, trying to download...")
                 try:
-                    _model_cache["nsfw_adamcodd_processor"] = AutoImageProcessor.from_pretrained(model_name)
-                    _model_cache["nsfw_adamcodd_model"] = AutoModelForImageClassification.from_pretrained(model_name)
+                    model_cache.set("nsfw_adamcodd_processor", AutoImageProcessor.from_pretrained(model_name))
+                    model_cache.set("nsfw_adamcodd_model", AutoModelForImageClassification.from_pretrained(model_name))
                 except Exception as e:
                     logger.warning(f"Cannot load AdamCodd model: {e}")
-                    _model_cache["nsfw_adamcodd_unavailable"] = True
-                    return True, 0.0
+                    model_cache.set("nsfw_adamcodd_unavailable", True)
+                    return fail_result(self.name, f"model unavailable: {e}", fail_closed)
 
-        if _model_cache.get("nsfw_adamcodd_unavailable"):
-            return True, 0.0
+        if model_cache.get("nsfw_adamcodd_unavailable"):
+            return fail_result(self.name, "model unavailable", fail_closed)
 
-        processor = _model_cache["nsfw_adamcodd_processor"]
-        model = _model_cache["nsfw_adamcodd_model"]
+        processor = model_cache.get("nsfw_adamcodd_processor")
+        model = model_cache.get("nsfw_adamcodd_model")
 
         try:
             inputs = processor(images=img, return_tensors="pt")
@@ -136,5 +152,4 @@ class NSFWCheck(BaseCheck):
             logger.info(f"AdamCodd NSFW score: {nsfw_score:.4f} (threshold: {self.threshold})")
             return is_safe, nsfw_score
         except Exception as e:
-            logger.warning(f"AdamCodd NSFW check failed: {e}")
-            return True, 0.0
+            return fail_result(self.name, str(e), fail_closed)

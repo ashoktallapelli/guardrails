@@ -7,7 +7,7 @@ Uses OpenCV Haar Cascade for face detection and Gaussian blur for anonymization.
 import logging
 from typing import Any, Dict
 
-from guardrails.base import BaseCheck, CheckResult
+from guardrails.base import BaseCheck, CheckResult, fail_result
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +38,13 @@ class FacesCheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
+        fail_closed = config.get("fail_closed", False)
+
         try:
             import cv2
             import numpy as np
         except ImportError:
-            logger.warning("opencv-python not installed, skipping face detection")
-            return CheckResult(
-                safe=True,
-                score=0.0,
-                action="allow",
-                details={"skipped": True, "reason": "opencv not installed"}
-            )
+            return fail_result(self.name, "opencv-python not installed", fail_closed)
 
         try:
             # Convert PIL to OpenCV format
@@ -92,8 +88,7 @@ class FacesCheck(BaseCheck):
             )
 
         except Exception as e:
-            logger.warning(f"Face detection failed: {e}")
-            return CheckResult(safe=True, score=0.0, action="allow", details={"error": str(e)})
+            return fail_result(self.name, str(e), fail_closed)
 
     def redact(self, input_data, config: Dict[str, Any]):
         """

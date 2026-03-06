@@ -4,9 +4,12 @@ base.py - Base class for all guardrail checks.
 All checks must inherit from BaseCheck and implement the check() method.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,6 +21,37 @@ class CheckResult:
     threshold: float = 0.0
     details: Dict[str, Any] = field(default_factory=dict)
     reason: Optional[str] = None
+
+
+def fail_result(check_name: str, error: str, fail_closed: bool = False) -> CheckResult:
+    """
+    Create a CheckResult for error cases.
+
+    Args:
+        check_name: Name of the check that failed
+        error: Error message
+        fail_closed: If True, reject on error. If False, allow on error.
+
+    Returns:
+        CheckResult with appropriate action
+    """
+    if fail_closed:
+        logger.warning(f"{check_name} failed (fail-closed): {error}")
+        return CheckResult(
+            safe=False,
+            score=1.0,
+            action="reject",
+            reason=f"{check_name} error (fail-closed): {error}",
+            details={"error": error, "fail_closed": True}
+        )
+    else:
+        logger.warning(f"{check_name} failed (fail-open): {error}")
+        return CheckResult(
+            safe=True,
+            score=0.0,
+            action="allow",
+            details={"error": error, "skipped": True}
+        )
 
 
 class BaseCheck(ABC):
