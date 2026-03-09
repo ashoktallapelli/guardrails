@@ -173,7 +173,8 @@ class Pipeline:
             if file_result.action == "reject":
                 return {
                     "decision": "REJECT",
-                    "reasons": [file_check.get_reason(file_result)],
+                    "rejected_by": "file_validation",
+                    "reason": file_check.get_reason(file_result),
                     "checks": {"file_validation": file_result.details},
                     "is_safe": False,
                 }

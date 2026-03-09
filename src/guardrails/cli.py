@@ -69,7 +69,7 @@ def run_image(
     except Exception as e:
         return {
             "decision": "REJECT",
-            "reasons": [f"Failed to open image: {e}"],
+            "reason": f"Failed to open image: {e}",
             "is_safe": False,
         }
 
