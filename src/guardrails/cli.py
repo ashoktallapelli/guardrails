@@ -138,10 +138,18 @@ def print_result(result: Dict[str, Any]) -> None:
     print(f"  DECISION: {decision}")
     print(f"{'='*50}")
 
-    # Show reasons
-    reasons = result.get('reasons', [])
-    if reasons:
-        print(f"\n  Reason: {reasons[0]}")
+    # Show reason
+    reason = result.get('reason', '')
+    if reason:
+        print(f"\n  Reason: {reason}")
+
+    # Show which check rejected (if applicable)
+    if result.get('rejected_by'):
+        print(f"  Rejected by: {result['rejected_by']}")
+
+    # Show checks that were not run due to early rejection
+    if result.get('not_run'):
+        print(f"  Skipped checks: {', '.join(result['not_run'])}")
 
     # Safety scores
     checks = result.get('checks', {})

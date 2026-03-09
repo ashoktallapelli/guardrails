@@ -81,7 +81,7 @@ class Pipeline:
 
     def run(self, input_data, input_type: str = "image") -> Dict[str, Any]:
         """
-        Run all checks on input data.
+        Run checks on input data. Stops immediately on first rejection.
 
         Args:
             input_data: Image (PIL) or text (str)
@@ -90,27 +90,31 @@ class Pipeline:
         Returns:
             Result dictionary with:
             - decision: ALLOW or REJECT
-            - reasons: List of human-readable reasons
-            - checks: Individual check results
+            - rejected_by: Check name that caused rejection (if rejected)
+            - reason: Human-readable reason
+            - checks: Individual check results (only checks that were run)
+            - not_run: List of checks skipped due to early rejection
             - is_safe: Boolean
-            - output: Processed data (if not rejected)
+            - output: Processed data (if allowed)
         """
         result = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "decision": "ALLOW",
-            "reasons": [],
+            "reason": "",
             "checks": {},
             "is_safe": True,
         }
 
-        for check in self.checks:
-            # Skip if wrong input type
-            if check.input_type != input_type and check.input_type != "both":
-                continue
+        # Get list of applicable checks for this input type
+        applicable_checks = [
+            check for check in self.checks
+            if check.input_type == input_type or check.input_type == "both"
+        ]
 
+        for i, check in enumerate(applicable_checks):
             # Skip if check is disabled
             if not check.enabled:
-                result["checks"][check.name] = {"skipped": True}
+                result["checks"][check.name] = {"skipped": True, "reason": "disabled"}
                 continue
 
             # Run the check
@@ -123,16 +127,23 @@ class Pipeline:
                 "details": check_result.details,
             }
 
-            # Handle rejection (stop immediately)
+            # Handle rejection (stop immediately - don't run remaining checks)
             if check_result.action == "reject":
                 result["decision"] = "REJECT"
                 result["is_safe"] = False
-                result["reasons"].append(check.get_reason(check_result))
-                logger.warning(f"REJECT: {check.get_reason(check_result)}")
+                result["rejected_by"] = check.name
+                result["reason"] = check.get_reason(check_result)
+
+                # List remaining checks that were not run
+                remaining_checks = [c.name for c in applicable_checks[i+1:] if c.enabled]
+                if remaining_checks:
+                    result["not_run"] = remaining_checks
+
+                logger.warning(f"REJECT by {check.name}: {result['reason']}")
                 return result
 
         # All checks passed
-        result["reasons"].append("All checks passed")
+        result["reason"] = "All checks passed"
         result["output"] = input_data
         logger.info(f"Pipeline result: {result['decision']}")
         return result
