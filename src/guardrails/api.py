@@ -336,8 +336,7 @@ async def scan_image(
 
     # Get decision and reason
     decision = pipeline_result.get("decision", "ALLOW")
-    reasons = pipeline_result.get("reasons", [])
-    reason = reasons[0] if reasons else "All checks passed"
+    reason = pipeline_result.get("reason", "All checks passed")
 
     # Encode image if not rejected
     image_base64 = None
@@ -470,8 +469,7 @@ async def scan_text(request: TextScanRequest):
 
     # Get decision and reason
     decision = pipeline_result.get("decision", "ALLOW")
-    reasons = pipeline_result.get("reasons", [])
-    reason = reasons[0] if reasons else "All checks passed"
+    reason = pipeline_result.get("reason", "All checks passed")
 
     return TextScanResponse(
         decision=decision,
