@@ -3,7 +3,6 @@ pipeline.py - Orchestrates guardrail checks execution.
 
 Runs checks in configured order and makes final decision:
 - REJECT: Unsafe content detected (stops immediately)
-- REDACT: Safe but PII/faces found (applies redactions)
 - ALLOW: Safe and clean
 """
 

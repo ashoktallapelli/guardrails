@@ -1,7 +1,8 @@
 """
-faces.py - Face detection and blur check.
+faces.py - Face detection check.
 
-Uses OpenCV Haar Cascade for face detection and Gaussian blur for anonymization.
+Uses OpenCV Haar Cascade for face detection.
+Returns REJECT if faces are detected.
 """
 
 import logging

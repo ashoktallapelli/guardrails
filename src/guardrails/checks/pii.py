@@ -1,10 +1,10 @@
 """
-pii.py - PII detection and redaction check.
+pii.py - PII detection check.
 
 Handles both image PII (OCR + Presidio) and text PII:
 - Extracts text from images using Tesseract OCR
 - Detects PII entities using Presidio Analyzer
-- Redacts PII using Presidio Image Redactor or Anonymizer
+- Returns REJECT if PII is detected
 """
 
 import logging

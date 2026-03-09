@@ -169,14 +169,13 @@ def print_result(result: Dict[str, Any]) -> None:
             status = "SAFE" if hate.get('safe', True) else "UNSAFE"
             print(f"    Hate Score:   {details.get('combined_hate_score', 0):.4f} ({status})")
 
-    # Redaction info
-    if decision in ["ALLOW", "REDACT"]:
-        print(f"\n  Redaction:")
+    # Detection info (for ALLOW, these should be 0)
+    if decision == "ALLOW":
+        print(f"\n  Detection:")
         pii_count = checks.get('pii', {}).get('details', {}).get('entity_count', 0)
         face_count = checks.get('faces', {}).get('details', {}).get('face_count', 0)
         print(f"    PII Found:    {pii_count}")
         print(f"    Faces Found:  {face_count}")
-        print(f"    Is Redacted:  {result.get('is_redacted', False)}")
 
     # Output info
     if result.get('output_path'):
