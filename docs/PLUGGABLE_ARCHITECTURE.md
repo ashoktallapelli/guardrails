@@ -73,7 +73,6 @@ class BaseGuardrail(ABC):
 
     # Decision behavior
     CAN_REJECT = True            # Can this guardrail reject content?
-    CAN_REDACT = False           # Can this guardrail redact content?
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -90,14 +89,10 @@ class BaseGuardrail(ABC):
                 "safe": bool,
                 "score": float,
                 "details": dict,
-                "action": "allow" | "redact" | "reject"
+                "action": "allow" | "reject"
             }
         """
         pass
-
-    def redact(self, input_data, config: Dict[str, Any]):
-        """Optional: Apply redaction if guardrail supports it."""
-        return input_data
 
     def get_reason(self, result: Dict[str, Any]) -> str:
         """Generate human-readable reason for the decision."""
@@ -116,7 +111,6 @@ class NSFWGuardrail(BaseGuardrail):
     version = "1.0.0"
     INPUT_TYPE = "image"
     CAN_REJECT = True
-    CAN_REDACT = False
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -166,7 +160,6 @@ class ViolenceGuardrail(BaseGuardrail):
     version = "1.0.0"
     INPUT_TYPE = "image"
     CAN_REJECT = True
-    CAN_REDACT = False
 
     def check(self, image, config: Dict[str, Any]) -> Dict[str, Any]:
         if not self.enabled:
@@ -197,7 +190,7 @@ class ViolenceGuardrail(BaseGuardrail):
         return "Violence check passed"
 ```
 
-### 4. Example Plugin: PII Guardrail with Redaction (`plugins/pii_image.py`)
+### 4. Example Plugin: PII Guardrail (`plugins/pii_image.py`)
 
 ```python
 from guardrails.base import BaseGuardrail
@@ -205,11 +198,10 @@ from typing import Dict, Any
 
 class PIIImageGuardrail(BaseGuardrail):
     name = "pii_image"
-    description = "Detects and redacts PII in images using OCR"
+    description = "Detects PII in images using OCR - rejects if found"
     version = "1.0.0"
     INPUT_TYPE = "image"
-    CAN_REJECT = False      # PII doesn't reject, only redacts
-    CAN_REDACT = True
+    CAN_REJECT = True
 
     def check(self, image, config: Dict[str, Any]) -> Dict[str, Any]:
         if not self.enabled:
@@ -217,25 +209,23 @@ class PIIImageGuardrail(BaseGuardrail):
 
         entities = self._detect_pii(image)
         entity_count = len(entities)
+        is_safe = entity_count == 0
 
         return {
-            "safe": True,  # PII doesn't make image "unsafe"
+            "safe": is_safe,
             "score": entity_count,
-            "action": "redact" if entity_count > 0 else "allow",
+            "action": "allow" if is_safe else "reject",
             "details": {
                 "entity_count": entity_count,
                 "entities": entities
             }
         }
 
-    def redact(self, image, config: Dict[str, Any]):
-        """Apply black boxes over detected PII."""
-        # Redaction logic here
-        return redacted_image
-
     def get_reason(self, result: Dict[str, Any]) -> str:
         count = result.get("details", {}).get("entity_count", 0)
-        return f"PII redacted: {count}"
+        if count > 0:
+            return f"PII detected: {count} entities"
+        return "No PII detected"
 ```
 
 ### 5. Plugin Registry (`registry.py`)
@@ -313,47 +303,39 @@ class GuardrailPipeline:
                 self.guardrails.append(guardrail_class(self.config))
 
     def run(self, input_data, input_type: str = "image") -> Dict[str, Any]:
-        """Run all guardrails on input."""
+        """Run guardrails on input. Stops immediately on first rejection."""
         results = {
             "decision": "ALLOW",
-            "reasons": [],
+            "reason": "",
             "checks": {},
-            "is_safe": True,
-            "is_redacted": False
+            "is_safe": True
         }
 
-        processed_data = input_data
+        # Get applicable guardrails
+        applicable = [g for g in self.guardrails
+                      if g.INPUT_TYPE == input_type or g.INPUT_TYPE == "both"]
 
-        for guardrail in self.guardrails:
-            # Skip if wrong input type
-            if guardrail.INPUT_TYPE != input_type and guardrail.INPUT_TYPE != "both":
-                continue
-
+        for i, guardrail in enumerate(applicable):
             # Run check
-            check_result = guardrail.check(processed_data, self.config)
+            check_result = guardrail.check(input_data, self.config)
             results["checks"][guardrail.name] = check_result
 
-            # Handle rejection
+            # Handle rejection (stop immediately)
             if check_result.get("action") == "reject":
                 results["decision"] = "REJECT"
                 results["is_safe"] = False
-                results["reasons"].append(guardrail.get_reason(check_result))
+                results["rejected_by"] = guardrail.name
+                results["reason"] = guardrail.get_reason(check_result)
+
+                # List remaining checks that were not run
+                remaining = [g.name for g in applicable[i+1:]]
+                if remaining:
+                    results["not_run"] = remaining
+
                 return results  # Stop on first rejection
 
-            # Handle redaction
-            if check_result.get("action") == "redact" and guardrail.CAN_REDACT:
-                processed_data = guardrail.redact(processed_data, self.config)
-                results["is_redacted"] = True
-                results["reasons"].append(guardrail.get_reason(check_result))
-
-        # Final decision
-        if results["is_redacted"]:
-            results["decision"] = "REDACT"
-
-        if not results["reasons"]:
-            results["reasons"].append("All checks passed, no redaction needed")
-
-        results["output"] = processed_data
+        results["reason"] = "All checks passed"
+        results["output"] = input_data
         return results
 ```
 
@@ -402,21 +384,17 @@ from guardrails.registry import guardrail
 @guardrail  # Auto-registers with registry
 class WatermarkGuardrail(BaseGuardrail):
     name = "watermark"
-    description = "Detects watermarks in images"
+    description = "Detects watermarks in images - rejects if found"
     INPUT_TYPE = "image"
-    CAN_REJECT = False
-    CAN_REDACT = True
+    CAN_REJECT = True
 
     def check(self, image, config):
         has_watermark = self._detect_watermark(image)
         return {
-            "safe": True,
+            "safe": not has_watermark,
             "score": 1.0 if has_watermark else 0.0,
-            "action": "redact" if has_watermark else "allow"
+            "action": "reject" if has_watermark else "allow"
         }
-
-    def redact(self, image, config):
-        return self._remove_watermark(image)
 ```
 
 ### Step 2: Enable in Config

@@ -7,8 +7,8 @@ A local-first pipeline that validates and sanitizes images before AI processing.
 - **NSFW Detection** - OpenNSFW2 or AdamCodd ViT
 - **Violence/Weapons Detection** - CLIP zero-shot classification
 - **Hate Symbol Detection** - CLIP zero-shot classification
-- **PII Detection & Redaction** - Tesseract OCR + Presidio
-- **Face Detection & Blur** - OpenCV
+- **PII Detection** - Tesseract OCR + Presidio (rejects if found)
+- **Face Detection** - OpenCV (rejects if found)
 - **Text PII Anonymization** - Presidio
 
 ## Installation
@@ -93,17 +93,19 @@ Invoke-RestMethod -Uri "http://localhost:8000/check_health"
 
 | Decision | Meaning | Output |
 |----------|---------|--------|
-| **ALLOW** | Safe, no redaction needed | Original image (EXIF stripped) |
-| **REDACT** | Safe, PII/faces found | Sanitized image returned |
-| **REJECT** | Unsafe content detected | No image returned |
+| **ALLOW** | Safe, no issues | Original image (EXIF stripped) |
+| **REJECT** | Unsafe content, PII, or faces detected | No image returned |
+
+Pipeline stops immediately on first failed check (early rejection).
 
 ### Reason Examples
 
 | Decision | Reason |
 |----------|--------|
 | REJECT | `Unsafe content detected: violence=0.01, weapons=0.87` |
-| REDACT | `PII redacted: 4, Faces blurred: 1` |
-| ALLOW | `All checks passed, no redaction needed` |
+| REJECT | `PII detected: 4 entities (PERSON, EMAIL_ADDRESS)` |
+| REJECT | `Faces detected: 2 face(s) found` |
+| ALLOW | `All checks passed` |
 
 ## Configuration
 
@@ -130,19 +132,34 @@ max_resolution:
 
 ## API Response Format
 
+**On REJECT (early exit):**
 ```json
 {
-  "decision": "REDACT",
-  "reason": "PII redacted: 4, Faces blurred: 0",
-  "is_safe": true,
-  "is_redacted": true,
-  "results": {
-    "nsfw": {"score": 0.001, "threshold": 0.8, "is_pass": true},
-    "violence": {"score": 0.001, "threshold": 0.7, "is_pass": true},
-    "pii": {"score": 4.0, "is_pass": true},
-    "faces": {"score": 0.0, "is_pass": true}
+  "decision": "REJECT",
+  "rejected_by": "nsfw",
+  "reason": "NSFW score 0.92 >= threshold 0.8",
+  "is_safe": false,
+  "checks": {
+    "file_validation": {"safe": true, "action": "allow"},
+    "nsfw": {"safe": false, "score": 0.92, "action": "reject"}
   },
-  "sanitized_image_base64": "..."
+  "not_run": ["violence", "hate_symbols", "pii", "faces"]
+}
+```
+
+**On ALLOW:**
+```json
+{
+  "decision": "ALLOW",
+  "reason": "All checks passed",
+  "is_safe": true,
+  "checks": {
+    "nsfw": {"safe": true, "score": 0.001},
+    "violence": {"safe": true, "score": 0.02},
+    "pii": {"safe": true, "score": 0},
+    "faces": {"safe": true, "score": 0}
+  },
+  "image_base64": "..."
 }
 ```
 
@@ -151,7 +168,6 @@ max_resolution:
 ```
 output/
 ├── allow/    # Safe images (EXIF stripped only)
-├── redact/   # Sanitized images (PII/faces redacted)
 └── (rejected images not saved)
 ```
 

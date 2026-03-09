@@ -7,8 +7,8 @@ A pluggable pipeline for validating and sanitizing images/text before AI process
 - **NSFW Detection** - OpenNSFW2 or AdamCodd ViT
 - **Violence/Weapons Detection** - CLIP zero-shot
 - **Hate Symbol Detection** - CLIP zero-shot
-- **PII Detection & Redaction** - Tesseract OCR + Presidio
-- **Face Detection & Blur** - OpenCV
+- **PII Detection** - Tesseract OCR + Presidio (rejects if found)
+- **Face Detection** - OpenCV (rejects if found)
 - **Pluggable Architecture** - Add new checks without code changes
 
 ## Project Structure
@@ -29,7 +29,6 @@ guardrails/
 │       └── faces.py
 ├── tests/
 ├── docs/
-├── scripts/                 # Utility scripts
 ├── config.yaml              # Configuration
 └── pyproject.toml
 ```
@@ -118,8 +117,9 @@ print(result["anonymized_text"])
 | Decision | Meaning | Output |
 |----------|---------|--------|
 | **ALLOW** | Safe, no issues | Original image (EXIF stripped) |
-| **REDACT** | Safe, PII/faces found | Sanitized image |
-| **REJECT** | Unsafe content | No image returned |
+| **REJECT** | Unsafe content, PII, or faces detected | No image returned |
+
+Pipeline stops immediately on first failed check (early rejection).
 
 ## Configuration
 
@@ -158,15 +158,11 @@ from guardrails.base import BaseCheck, CheckResult
 
 class WatermarkCheck(BaseCheck):
     name = "watermark"
-    can_redact = True
+    can_reject = True
 
     def check(self, image, config):
-        # Detection logic
+        # Detection logic - return "reject" if watermark found
         return CheckResult(safe=True, score=0.0, action="allow")
-
-    def redact(self, image, config):
-        # Redaction logic
-        return image
 ```
 
 **Step 2:** Add to `checks/__init__.py`

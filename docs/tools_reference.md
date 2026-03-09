@@ -1123,9 +1123,10 @@ uv run uvicorn api:app --reload --port 8000
 
 | Decision | Meaning | Image Returned |
 |----------|---------|----------------|
-| **ALLOW** | Safe, no redaction needed | ✅ Original (EXIF stripped) |
-| **REDACT** | Safe, PII/faces found and redacted | ✅ Sanitized image |
-| **REJECT** | Unsafe content detected | ❌ No image |
+| **ALLOW** | Safe, no issues | ✅ Original (EXIF stripped) |
+| **REJECT** | Unsafe content, PII, or faces detected | ❌ No image |
+
+Pipeline stops immediately on first failed check (early rejection).
 
 ### Example Requests
 
@@ -1149,26 +1150,34 @@ curl -X POST "http://localhost:8000/scan/text" \
 
 ### Response Format (scan/image)
 
+**On REJECT (early exit):**
 ```json
 {
-  "decision": "REDACT",
-  "reason": "PII redacted: 4, Faces blurred: 0",
-  "is_safe": true,
-  "is_redacted": true,
-  "results": {
-    "nsfw": {"score": 0.001, "threshold": 0.8, "is_pass": true},
-    "violence": {"score": 0.001, "threshold": 0.7, "is_pass": true},
-    "hate_symbols": {"score": 0.0003, "threshold": 0.75, "is_pass": true},
-    "pii": {"score": 4.0, "threshold": 0, "is_pass": true},
-    "faces": {"score": 0.0, "threshold": 0, "is_pass": true}
+  "decision": "REJECT",
+  "rejected_by": "pii",
+  "reason": "PII detected: 4 entities (PERSON, EMAIL_ADDRESS)",
+  "is_safe": false,
+  "checks": {
+    "nsfw": {"safe": true, "score": 0.001, "action": "allow"},
+    "pii": {"safe": false, "score": 4.0, "action": "reject"}
   },
-  "sanitized_image_base64": "...",
-  "meta": {
-    "sha256": "c7deaf...",
-    "perceptual_hash": "0000000000000000",
-    "processing_ms": 8500,
-    "filename": "pii_test.png"
-  }
+  "not_run": ["faces"]
+}
+```
+
+**On ALLOW:**
+```json
+{
+  "decision": "ALLOW",
+  "reason": "All checks passed",
+  "is_safe": true,
+  "checks": {
+    "nsfw": {"safe": true, "score": 0.001},
+    "violence": {"safe": true, "score": 0.001},
+    "pii": {"safe": true, "score": 0},
+    "faces": {"safe": true, "score": 0}
+  },
+  "image_base64": "..."
 }
 ```
 
@@ -1176,18 +1185,16 @@ curl -X POST "http://localhost:8000/scan/text" \
 
 ```json
 {
-  "decision": "REDACT",
-  "reason": "PII anonymized: 4 entities (PHONE_NUMBER, PERSON, EMAIL_ADDRESS, URL)",
-  "is_safe": true,
-  "is_redacted": true,
-  "results": {
-    "pii": {"score": 4.0, "threshold": 0.35, "is_pass": true}
+  "decision": "REJECT",
+  "reason": "PII detected: 3 entities (PHONE_NUMBER, PERSON, EMAIL_ADDRESS)",
+  "is_safe": false,
+  "checks": {
+    "pii": {"safe": false, "score": 3.0, "action": "reject"}
   },
-  "sanitized_text": "Contact <PERSON> at <EMAIL_ADDRESS> or <PHONE_NUMBER>",
   "entities": [
-    {"type": "PERSON", "original_text": "John", "score": 0.85},
-    {"type": "EMAIL_ADDRESS", "original_text": "john@example.com", "score": 1.0},
-    {"type": "PHONE_NUMBER", "original_text": "555-123-4567", "score": 0.4}
+    {"type": "PERSON", "text": "John", "score": 0.85},
+    {"type": "EMAIL_ADDRESS", "text": "john@example.com", "score": 1.0},
+    {"type": "PHONE_NUMBER", "text": "555-123-4567", "score": 0.4}
   ]
 }
 ```
@@ -1199,8 +1206,9 @@ curl -X POST "http://localhost:8000/scan/text" \
 | REJECT (NSFW) | `NSFW score {score} >= threshold {threshold}` |
 | REJECT (Violence) | `Unsafe content detected: violence={v}, weapons={w}` |
 | REJECT (Hate) | `Hate symbols detected: combined_score={score}` |
-| REDACT | `PII redacted: {count}, Faces blurred: {count}` |
-| ALLOW | `All checks passed, no redaction needed` |
+| REJECT (PII) | `PII detected: {count} entities ({types})` |
+| REJECT (Faces) | `Faces detected: {count} face(s) found` |
+| ALLOW | `All checks passed` |
 
 ---
 
@@ -1234,7 +1242,7 @@ Each line is a JSON object:
   "nsfw_score": 0.0009,
   "violence_scores": {"safe": 0.56, "document": 0.11, "violence": 0.02, "weapons": 0.18},
   "hate_scores": {"safe": 0.35, "document": 0.04, "combined_hate_score": 0.61},
-  "reasons": ["All checks passed, no redaction needed"]
+  "reason": "All checks passed"
 }
 ```
 
@@ -1242,9 +1250,8 @@ Each line is a JSON object:
 
 | Decision | is_safe | Meaning |
 |----------|---------|---------|
-| ALLOW | true | Safe, no redaction needed |
-| REDACT | true | Safe, PII/faces redacted |
-| REJECT | false | Unsafe content blocked |
+| ALLOW | true | Safe, no issues |
+| REJECT | false | Unsafe content, PII, or faces blocked |
 
 ### Text PII Log Format
 
@@ -1268,10 +1275,9 @@ Each line is a JSON object:
 
 ```
 output/
-├── allow/                    # Safe images, no redaction
+├── allow/                    # Safe images
 │   ├── b803f7a859c3.jpg
 │   └── ...
-├── redact/                   # Safe images with PII/faces redacted
 │   ├── c52692b99170.jpg
 │   └── ...
 └── (rejected images not saved)
@@ -1282,8 +1288,7 @@ output/
 | Decision | Folder | Contents |
 |----------|--------|----------|
 | ALLOW | `output/allow/` | Original images (EXIF stripped only) |
-| REDACT | `output/redact/` | Sanitized images (PII/faces redacted) |
-| REJECT | (not saved) | Unsafe content - no output |
+| REJECT | (not saved) | Unsafe/PII/faces - no output |
 
 ### JSON Results (--save-json)
 
@@ -1346,27 +1351,29 @@ pii_score_threshold: 0.35  # Catches phone numbers (score ~0.4)
 - Prevents false positives on text/document images (PII documents, receipts, forms)
 - Document images now get high "document" score, reducing violence/weapons false positives
 
-**Three-Decision Model:**
-- Added REDACT decision alongside ALLOW and REJECT
-- ALLOW: Safe, no redaction needed
-- REDACT: Safe, but PII/faces found and automatically redacted
-- REJECT: Unsafe content (NSFW, violence, hate symbols)
+**Two-Decision Model (ALLOW/REJECT):**
+- Simplified to ALLOW and REJECT only
+- ALLOW: Safe, no issues
+- REJECT: Unsafe content, PII, or faces detected
+- Early rejection: pipeline stops on first failed check
 
 **API Alignment (SGS Standard):**
 - Renamed endpoints: `/scan/image`, `/scan/text`, `/check_health`
-- Added `reason` field to all responses (aligned with CLI output)
-- Response includes `decision`, `reason`, `is_safe`, `is_redacted`, `results`
+- Added `rejected_by` field showing which check caused rejection
+- Added `not_run` field listing checks skipped due to early rejection
+- Response includes `decision`, `reason`, `is_safe`, `checks`
 
 **Output Organization:**
-- Images now saved to decision-based folders: `output/allow/`, `output/redact/`
-- REJECT images are not saved (unsafe content)
+- Images saved to `output/allow/` only
+- REJECT images are not saved
 
 **Reason Formats:**
 - NSFW: `NSFW score {score} >= threshold {threshold}`
 - Violence: `Unsafe content detected: violence={v}, weapons={w}`
 - Hate: `Hate symbols detected: combined_score={score}`
-- REDACT: `PII redacted: {count}, Faces blurred: {count}`
-- ALLOW: `All checks passed, no redaction needed`
+- PII: `PII detected: {count} entities ({types})`
+- Faces: `Faces detected: {count} face(s) found`
+- ALLOW: `All checks passed`
 
 ---
 

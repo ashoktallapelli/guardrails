@@ -17,18 +17,20 @@ A local-first security pipeline that validates and sanitizes images/text BEFORE 
 
 ---
 
-## Three Decision States
+## Two Decision States
 
 | Decision | Meaning | What Happens |
 |----------|---------|--------------|
 | **ALLOW** | Safe, no issues found | Original image returned (EXIF stripped) |
-| **REDACT** | Safe, but PII/faces found | Sanitized image with redactions returned |
-| **REJECT** | Unsafe content detected | Image blocked, not processed |
+| **REJECT** | Unsafe content, PII, or faces detected | Image blocked, not processed |
+
+Pipeline stops immediately on first failed check (early rejection).
 
 **Reason Examples:**
 - `REJECT`: "Unsafe content detected: violence=0.01, weapons=0.87"
-- `REDACT`: "PII redacted: 4, Faces blurred: 1"
-- `ALLOW`: "All checks passed, no redaction needed"
+- `REJECT`: "PII detected: 4 entities (PERSON, EMAIL_ADDRESS)"
+- `REJECT`: "Faces detected: 2 face(s) found"
+- `ALLOW`: "All checks passed"
 
 ---
 
@@ -59,8 +61,8 @@ Input Image/Text
 ┌──────────────────────────────────────────────────────────┐
 │                    PRIVACY LAYER                          │
 ├──────────────────────────────────────────────────────────┤
-│  7. PII Detection & Redaction (Tesseract + Presidio)      │
-│  8. Face Detection & Blur (OpenCV)                        │
+│  7. PII Detection (Tesseract + Presidio)  → REJECT if found│
+│  8. Face Detection (OpenCV)               → REJECT if found│
 │  9. EXIF Metadata Stripping (remove GPS, device info)     │
 └──────────────────────────────────────────────────────────┘
        │
@@ -68,9 +70,9 @@ Input Image/Text
 ┌──────────────────────────────────────────────────────────┐
 │                    OUTPUT                                 │
 ├──────────────────────────────────────────────────────────┤
-│  Decision: ALLOW / REDACT / REJECT                        │
+│  Decision: ALLOW / REJECT                                 │
 │  Reason: Human-readable explanation                       │
-│  Sanitized Image (if ALLOW or REDACT)                     │
+│  Sanitized Image (if ALLOW only)                          │
 │  Audit Log Entry                                          │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -392,7 +394,7 @@ uv run python image_guard.py test_images/sample.jpg
 ==================================================
   DECISION: ALLOW
 ==================================================
-  Reason: All checks passed, no redaction needed
+  Reason: All checks passed
 
   Safety Scores:
     NSFW:         0.0009 (SAFE)
@@ -427,26 +429,23 @@ uv run python image_guard.py test_images/guns.jpg
 
 ---
 
-### Demo 3: PII Document → REDACT
+### Demo 3: PII Document → REJECT
 
 ```bash
-uv run python image_guard.py test_images/pii_test.png
+uv run python -m guardrails test_images/pii_test.png
 ```
 
 **Expected Output:**
 ```
 ==================================================
-  DECISION: REDACT
+  DECISION: REJECT
 ==================================================
-  Reason: PII redacted: 4, Faces blurred: 0
-
-  Redaction:
-    PII Found:    4
-    Faces Found:  0
-    Is Redacted:  True
+  Reason: PII detected: 4 entities (PERSON, EMAIL_ADDRESS, US_SSN, CREDIT_CARD)
+  Rejected by: pii
+  Skipped checks: faces
 ```
 
-**Talking Point:** Document contains PII (name, email, SSN, credit card). CLIP correctly identified it as a "document" (not weapons). PII redacted with black boxes. Safe image returned.
+**Talking Point:** Document contains PII (name, email, SSN, credit card). Image rejected to protect sensitive data. No output file created.
 
 ---
 
@@ -485,11 +484,11 @@ print(json.dumps({
 **Expected Output:**
 ```json
 {
-  "decision": "REDACT",
-  "reason": "PII redacted: 4, Faces blurred: 0",
-  "is_safe": true,
-  "is_redacted": true,
-  "pii_count": 4.0
+  "decision": "REJECT",
+  "rejected_by": "pii",
+  "reason": "PII detected: 4 entities (PERSON, EMAIL_ADDRESS, US_SSN, CREDIT_CARD)",
+  "is_safe": false,
+  "not_run": ["faces"]
 }
 ```
 
@@ -506,9 +505,9 @@ curl -s -X POST "http://localhost:8000/scan/text" \
 **Expected Output:**
 ```json
 {
-  "decision": "REDACT",
-  "reason": "PII anonymized: 3 entities (PERSON, PHONE_NUMBER, EMAIL_ADDRESS)",
-  "sanitized_text": "Call <PERSON> at <PHONE_NUMBER> or email <EMAIL_ADDRESS>"
+  "decision": "REJECT",
+  "reason": "PII detected: 3 entities (PERSON, PHONE_NUMBER, EMAIL_ADDRESS)",
+  "is_safe": false
 }
 ```
 
@@ -620,9 +619,10 @@ if result["decision"] == "ALLOW":
 Image Guardrails = Safety + Privacy + Compliance
 
 ✓ Blocks NSFW, violence, weapons, hate symbols
-✓ Redacts PII (names, emails, SSN, credit cards)
-✓ Blurs faces for privacy
+✓ Rejects images with PII (names, emails, SSN, credit cards)
+✓ Rejects images with faces for privacy
 ✓ Strips EXIF metadata (GPS, device info)
+✓ Early rejection - stops on first failed check
 ✓ 100% local processing
 ✓ Full audit trail
 ✓ REST API ready
