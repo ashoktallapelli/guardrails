@@ -4,12 +4,28 @@ A pluggable pipeline for validating and sanitizing images/text before AI process
 
 ## Features
 
-- **NSFW Detection** - OpenNSFW2 or AdamCodd ViT
-- **Violence/Weapons Detection** - CLIP zero-shot
-- **Hate Symbol Detection** - CLIP zero-shot
-- **PII Detection** - Tesseract OCR + Presidio (rejects if found)
-- **Face Detection** - OpenCV (rejects if found)
-- **Pluggable Architecture** - Add new checks without code changes
+- **NSFW Detection** - AdamCodd ViT (96.5% accuracy)
+- **Violence Detection** - CLIP ViT-H/14 zero-shot (78% accuracy)
+- **Weapons Detection** - CLIP ViT-H/14 zero-shot
+- **Hate Symbol Detection** - CLIP ViT-H/14 (configurable labels)
+- **Self-Harm Detection** - CLIP ViT-H/14 zero-shot
+- **PII Detection** - Tesseract OCR + Presidio
+- **Face Detection** - OpenCV Haar Cascade
+- **Pluggable Architecture** - Add new checks via config
+- **Configurable Labels** - Customize detection labels per region
+
+## Models Used
+
+| Check | Model | Accuracy | Size |
+|-------|-------|----------|------|
+| NSFW | AdamCodd/vit-base-nsfw-detector | 96.5% | 330MB |
+| Violence/Hate | laion/CLIP-ViT-H-14-laion2B-s32B-b79K | 78% | 3.7GB |
+| PII | Tesseract + Presidio | 90%+ | - |
+| Faces | OpenCV Haar Cascade | 50-70% | 1MB |
+
+**Model Downloads:**
+- CLIP: https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+- NSFW: https://huggingface.co/AdamCodd/vit-base-nsfw-detector
 
 ## Project Structure
 
@@ -56,6 +72,20 @@ sudo apt-get install libmagic1 tesseract-ocr
 ```bash
 uv sync
 ```
+
+### Model Downloads
+
+Models are downloaded automatically on first run. For offline/air-gapped environments:
+
+```bash
+# Download models manually
+huggingface-cli download laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+huggingface-cli download AdamCodd/vit-base-nsfw-detector
+```
+
+**Cache locations:**
+- macOS/Linux: `~/.cache/huggingface/hub/`
+- Windows: `C:\Users\<username>\.cache\huggingface\hub\`
 
 ## Usage
 
@@ -135,18 +165,51 @@ guardrails:
   - pii
   - faces
 
+# Model paths
+# Use HuggingFace model ID or local path
+model_paths:
+  clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+
+# For Windows (use full local path):
+# model_paths:
+#   clip: "C:/Users/username/.cache/huggingface/hub/models--laion--CLIP-ViT-H-14-laion2B-s32B-b79K/snapshots/main"
+
+# NSFW model: "opennsfw2" (fast) or "adamcodd" (accurate)
+nsfw_model: "adamcodd"
+
 # Thresholds (lower = stricter)
 nsfw_threshold: 0.80
 violence_threshold: 0.70
 hate_symbol_threshold: 0.75
 
-# NSFW model: "opennsfw2" (fast) or "adamcodd" (accurate)
-nsfw_model: "adamcodd"
+# Configurable detection labels
+# First 2 = safe categories, rest = unsafe categories
+violence_labels:
+  - "a safe, normal photograph"
+  - "a document, text, screenshot"
+  - "violence, gore, blood, injury, fighting"
+  - "guns, weapons, knives, dangerous objects"
+  - "self-harm, suicide, cutting"
 
-# Enable/disable
-enable_violence: true
-enable_pii: true
-enable_faces: true
+hate_labels:
+  - "a safe, normal photograph without symbols"
+  - "a document, text, form, screenshot"
+  - "nazi swastika tilted on red background, SS bolts, hitler salute"
+  - "KKK imagery, white hood, burning cross, racist symbols"
+  - "ISIS flag, terrorist symbols, extremist imagery"
+
+# Regional customization (e.g., India - exclude religious swastika):
+# hate_labels:
+#   - "a safe, normal photograph without symbols"
+#   - "a document, text, form, screenshot"
+#   - "nazi swastika tilted 45 degrees on red background, SS bolts"
+#   - "KKK imagery, burning cross, racist symbols"
+#   - "ISIS flag, terrorist symbols"
+
+# Offline mode (after models downloaded)
+environment:
+  hf_hub_offline: true
+  transformers_offline: true
 ```
 
 ## Adding a New Check
@@ -199,7 +262,34 @@ guardrails:
 
 **Swagger UI:** http://localhost:8000/docs
 
+## API Response Example
+
+```json
+{
+  "decision": "REJECT",
+  "reason": "Unsafe content detected: guns=0.99, total=0.99",
+  "is_safe": false,
+  "results": {
+    "nsfw": {"score": 0.02, "threshold": 0.8, "is_pass": true},
+    "violence": {"score": 0.99, "threshold": 0.7, "is_pass": false}
+  },
+  "image_base64": null,
+  "meta": {
+    "sha256": "abc123...",
+    "processing_ms": 245
+  }
+}
+```
+
 ## Troubleshooting
+
+**HuggingFace model not loading (Windows):**
+
+Use full local path in config.yaml:
+```yaml
+model_paths:
+  clip: "C:/Users/username/.cache/huggingface/hub/models--laion--CLIP-ViT-H-14-laion2B-s32B-b79K/snapshots/main"
+```
 
 **NSFW weights not found:**
 ```bash
@@ -209,10 +299,29 @@ curl -L https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_wei
   -o ~/.opennsfw2/weights/open_nsfw_weights.h5
 ```
 
-**Windows SSL errors:**
+**SSL certificate errors:**
 ```bash
 uv sync  # certifi handles SSL certificates
 ```
+
+**Model download taking too long:**
+
+Download manually and set offline mode:
+```bash
+# Download
+huggingface-cli download laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+
+# Then set in config.yaml
+environment:
+  hf_hub_offline: true
+```
+
+## Hardware Requirements
+
+| Setup | RAM | Storage | Inference |
+|-------|-----|---------|-----------|
+| CPU only | 8GB | 10GB | 500ms-2s |
+| GPU (recommended) | 16GB + 8GB VRAM | 20GB | 100-200ms |
 
 ---
 
