@@ -84,18 +84,20 @@ class ViolenceCheck(BaseCheck):
         model = model_cache.get("clip_model")
         processor = model_cache.get("clip_processor")
 
-        # Safety labels for zero-shot classification
-        safety_labels = [
+        # Violence detection labels for zero-shot classification
+        # Load from config or use defaults
+        default_labels = [
             "a safe, normal photograph",
-            "a document, text, screenshot, form, receipt",
+            "a document, text, screenshot",
             "violence, gore, blood, injury, fighting",
-            "weapons, guns, knives, dangerous objects",
-            "disturbing, graphic, shocking content",
+            "guns, weapons, knives, dangerous objects",
+            "self-harm, suicide, cutting",
         ]
+        violence_labels = config.get("violence_labels", default_labels)
 
         try:
             inputs = processor(
-                text=safety_labels,
+                text=violence_labels,
                 images=input_data,
                 return_tensors="pt",
                 padding=True
@@ -106,27 +108,33 @@ class ViolenceCheck(BaseCheck):
                 logits_per_image = outputs.logits_per_image
                 probs = logits_per_image.softmax(dim=1).squeeze().tolist()
 
-            scores = {
-                "safe": round(probs[0], 4),
-                "document": round(probs[1], 4),
-                "violence": round(probs[2], 4),
-                "weapons": round(probs[3], 4),
-                "disturbing": round(probs[4], 4),
-            }
+            # Build scores dict dynamically from labels
+            # First 2 labels are safe categories, rest are unsafe
+            scores = {}
+            for i, label in enumerate(violence_labels):
+                # Create key from first word of label
+                key = label.split(",")[0].split()[0].lower().replace("-", "_")
+                if i == 0:
+                    key = "safe"
+                elif i == 1:
+                    key = "document"
+                scores[key] = round(probs[i], 4)
 
-            # Combined unsafe score (document is treated as safe)
-            unsafe_score = scores["violence"] + scores["weapons"] + scores["disturbing"]
+            # Combined unsafe score (skip first 2 safe categories)
+            unsafe_score = sum(probs[2:])
             is_safe = unsafe_score < self.threshold
 
-            logger.info(
-                f"Safety scores: safe={scores['safe']:.2f}, document={scores['document']:.2f}, "
-                f"violence={scores['violence']:.2f}, weapons={scores['weapons']:.2f}"
-            )
+            # Log scores (exclude safe categories)
+            unsafe_categories = {k: v for k, v in scores.items() if k not in ["safe", "document"]}
+            logger.info(f"Violence scores: safe={scores['safe']:.2f}, unsafe={unsafe_categories}")
 
             action = "allow" if is_safe else "reject"
             reason = None
             if not is_safe:
-                reason = f"Unsafe content detected: violence={scores['violence']:.2f}, weapons={scores['weapons']:.2f}"
+                # Find the highest scoring category
+                unsafe_categories = {k: v for k, v in scores.items() if k not in ["safe", "document"]}
+                top_category = max(unsafe_categories, key=unsafe_categories.get)
+                reason = f"Unsafe content detected: {top_category}={scores[top_category]:.2f}, total={unsafe_score:.2f}"
 
             return CheckResult(
                 safe=is_safe,

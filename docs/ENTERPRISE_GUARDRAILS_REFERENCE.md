@@ -59,11 +59,13 @@ This document provides a comprehensive reference for implementing production-gra
 
 **Purpose:** Detect violent imagery including blood, gore, injury, fighting.
 
-| Model | Type | Accuracy | Size | License |
-|-------|------|----------|------|---------|
-| **CLIP ViT-H/14 (LAION)** | Zero-shot | 78% | 2.5GB | MIT |
-| **CLIP ViT-L/14 (OpenAI)** | Zero-shot | 75% | 1.7GB | MIT |
-| **CLIP ViT-B/32 (OpenAI)** | Zero-shot | 63% | 605MB | MIT |
+| Model | Type | Accuracy | Size (FP16) | Size (FP32) | License |
+|-------|------|----------|-------------|-------------|---------|
+| **CLIP ViT-H/14 (LAION)** | Zero-shot | 78% | 3.7GB | 7.4GB | MIT |
+| **CLIP ViT-L/14 (OpenAI)** | Zero-shot | 75% | 890MB | 1.7GB | MIT |
+| **CLIP ViT-B/32 (OpenAI)** | Zero-shot | 63% | 340MB | 605MB | MIT |
+
+**Note:** HuggingFace downloads FP16 safetensors (~3.7GB). open_clip downloads FP32 PyTorch (~7.4GB). With all checkpoints and cache, total can reach 15-25GB.
 
 **Detection Labels:**
 ```
@@ -520,14 +522,16 @@ This document provides a comprehensive reference for implementing production-gra
 
 ### Accuracy vs Speed vs Size
 
-| Model | Accuracy | Inference (ms) | Size | GPU Required |
-|-------|----------|----------------|------|--------------|
-| CLIP ViT-B/32 | 63% | 20ms | 605MB | No |
-| CLIP ViT-L/14 | 75% | 50ms | 1.7GB | Recommended |
-| CLIP ViT-H/14 | 78% | 100ms | 2.5GB | Recommended |
-| YOLOv8n | 90% | 5ms | 6MB | No |
-| YOLOv8x | 95%+ | 20ms | 130MB | Recommended |
-| AdamCodd NSFW | 96.5% | 30ms | 330MB | No |
+| Model | Accuracy | Inference (ms) | Size (FP16) | Size (FP32) | GPU Required |
+|-------|----------|----------------|-------------|-------------|--------------|
+| CLIP ViT-B/32 | 63% | 20ms | 340MB | 605MB | No |
+| CLIP ViT-L/14 | 75% | 50ms | 890MB | 1.7GB | Recommended |
+| CLIP ViT-H/14 | 78% | 100ms | 3.7GB | 7.4GB | Recommended |
+| YOLOv8n | 90% | 5ms | 6MB | 6MB | No |
+| YOLOv8x | 95%+ | 20ms | 130MB | 130MB | Recommended |
+| AdamCodd NSFW | 96.5% | 30ms | 330MB | 330MB | No |
+
+**Note:** Total disk space with HuggingFace cache can be 2-3x the model size due to multiple formats and checkpoints.
 
 ### Model Selection Guide
 

@@ -85,13 +85,15 @@ class HateSymbolsCheck(BaseCheck):
         processor = model_cache.get("clip_processor")
 
         # Hate symbol labels for zero-shot classification
-        hate_labels = [
-            "a normal, safe photograph without any symbols",
-            "a document, text, screenshot, form, receipt",
-            "hate symbols, extremist imagery, or offensive symbols",
-            "nazi symbols, swastika, or white supremacist imagery",
-            "confederate flag or racist symbols",
+        # Load from config or use defaults
+        default_labels = [
+            "a safe, normal photograph without symbols",
+            "a document, text, form, screenshot",
+            "nazi swastika tilted on red background, SS bolts, hitler salute",
+            "KKK imagery, white hood, burning cross, racist symbols",
+            "ISIS flag, terrorist symbols, extremist imagery",
         ]
+        hate_labels = config.get("hate_labels", default_labels)
 
         try:
             inputs = processor(
@@ -106,28 +108,34 @@ class HateSymbolsCheck(BaseCheck):
                 logits_per_image = outputs.logits_per_image
                 probs = logits_per_image.softmax(dim=1).squeeze().tolist()
 
-            scores = {
-                "safe": round(probs[0], 4),
-                "document": round(probs[1], 4),
-                "hate_symbols": round(probs[2], 4),
-                "nazi_symbols": round(probs[3], 4),
-                "racist_symbols": round(probs[4], 4),
-            }
+            # Build scores dict dynamically from labels
+            # First 2 labels are safe categories, rest are unsafe
+            scores = {}
+            for i, label in enumerate(hate_labels):
+                # Create key from first word of label
+                key = label.split(",")[0].split()[0].lower().replace("-", "_")
+                if i == 0:
+                    key = "safe"
+                elif i == 1:
+                    key = "document"
+                scores[key] = round(probs[i], 4)
 
-            # Combined hate score (document is treated as safe)
-            hate_score = scores["hate_symbols"] + scores["nazi_symbols"] + scores["racist_symbols"]
+            # Combined hate score (skip first 2 safe categories)
+            hate_score = sum(probs[2:])
             scores["combined_hate_score"] = round(hate_score, 4)
             is_safe = hate_score < self.threshold
 
-            logger.info(
-                f"Hate symbol scores: safe={scores['safe']:.2f}, document={scores['document']:.2f}, "
-                f"combined_hate={hate_score:.2f}"
-            )
+            # Log scores (exclude safe categories)
+            unsafe_categories = {k: v for k, v in scores.items() if k not in ["safe", "document"]}
+            logger.info(f"Hate symbol scores: safe={scores['safe']:.2f}, unsafe={unsafe_categories}")
 
             action = "allow" if is_safe else "reject"
             reason = None
             if not is_safe:
-                reason = f"Hate symbols detected: combined_score={hate_score:.2f}"
+                # Find the highest scoring category
+                unsafe_categories = {k: v for k, v in scores.items() if k not in ["safe", "document"]}
+                top_category = max(unsafe_categories, key=unsafe_categories.get)
+                reason = f"Hate symbols detected: {top_category}={scores[top_category]:.2f}, total={hate_score:.2f}"
 
             return CheckResult(
                 safe=is_safe,

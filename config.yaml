@@ -32,15 +32,15 @@ max_resolution:
 nsfw_model: "adamcodd"
 
 # Model paths
-# CLIP ViT-H/14 (LAION) - 78% accuracy, 2.5GB
-# Upgrade from default ViT-B/32 (63% accuracy, 605MB)
+# CLIP ViT-H/14 (LAION) - 78% accuracy, 3.7GB (FP16) / 7.4GB (FP32)
+# Note: Total cache with all formats can reach 15-25GB
 model_paths:
   clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 
 # Alternative CLIP models (uncomment to use):
-#   clip: "openai/clip-vit-base-patch32"      # Default, 63% accuracy, 605MB
-#   clip: "openai/clip-vit-large-patch14"     # 75% accuracy, 1.7GB
-#   clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"  # Best, 78% accuracy, 2.5GB
+#   clip: "openai/clip-vit-base-patch32"      # Default, 63% accuracy, 340MB (FP16)
+#   clip: "openai/clip-vit-large-patch14"     # 75% accuracy, 890MB (FP16)
+#   clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"  # Best, 78% accuracy, 3.7GB (FP16)
 
 # Custom local paths (if models downloaded manually):
 # macOS/Linux:
@@ -57,19 +57,43 @@ nsfw_threshold: 0.80
 
 # Violence/Safety Detection (CLIP ViT-H/14 zero-shot classification)
 # Model: laion/CLIP-ViT-H-14-laion2B-s32B-b79K (78% accuracy)
-# Detects:
-#   - violence, gore, blood, injury
-#   - weapons (guns, knives)
-#   - disturbing/graphic content
-# Combined unsafe score threshold (violence + weapons + disturbing)
+# Combined unsafe score threshold (sum of all unsafe labels)
 enable_violence_check: true
 violence_threshold: 0.70
 
+# Violence detection labels (configurable)
+# First 2 labels are "safe" categories, rest are "unsafe"
+# Unsafe score = sum of all labels after first 2
+violence_labels:
+  - "a safe, normal photograph"
+  - "a document, text, screenshot"
+  - "violence, gore, blood, injury, fighting"
+  - "guns, weapons, knives, dangerous objects"
+  - "self-harm, suicide, cutting"
+
 # Hate Symbol Detection (CLIP ViT-H/14 zero-shot classification)
 # Model: laion/CLIP-ViT-H-14-laion2B-s32B-b79K (78% accuracy)
-# Detects: extremist imagery, nazi symbols, racist symbols
 enable_hate_symbol_check: true
 hate_symbol_threshold: 0.75
+
+# Hate symbol detection labels (configurable)
+# First 2 labels are "safe" categories, rest are "unsafe"
+# Customize based on region (e.g., exclude religious swastika in India)
+hate_labels:
+  - "a safe, normal photograph without symbols"
+  - "a document, text, form, screenshot"
+  - "nazi swastika tilted on red background, SS bolts, hitler salute"
+  - "KKK imagery, white hood, burning cross, racist symbols"
+  - "ISIS flag, terrorist symbols, extremist imagery"
+
+# Regional examples (uncomment to use):
+# For India (exclude religious swastika):
+#   hate_labels:
+#     - "a safe, normal photograph without symbols"
+#     - "a document, text, form, screenshot"
+#     - "nazi swastika tilted 45 degrees on red background, SS bolts"
+#     - "KKK imagery, burning cross, racist symbols"
+#     - "ISIS flag, terrorist symbols"
 
 # Privacy features - Image
 enable_pii_redaction: true
