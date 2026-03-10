@@ -31,27 +31,33 @@ max_resolution:
 #   - "adamcodd": ViT based, ~330MB, ~96.5% accuracy (higher accuracy)
 nsfw_model: "adamcodd"
 
-# Model paths (optional - override default locations)
-# Uncomment and set paths if models are in custom locations
-#
+# Model paths
+# CLIP ViT-H/14 (LAION) - 78% accuracy, 2.5GB
+# Upgrade from default ViT-B/32 (63% accuracy, 605MB)
+model_paths:
+  clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+
+# Alternative CLIP models (uncomment to use):
+#   clip: "openai/clip-vit-base-patch32"      # Default, 63% accuracy, 605MB
+#   clip: "openai/clip-vit-large-patch14"     # 75% accuracy, 1.7GB
+#   clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"  # Best, 78% accuracy, 2.5GB
+
+# Custom local paths (if models downloaded manually):
 # macOS/Linux:
-# model_paths:
 #   opennsfw2: "~/.opennsfw2/weights/open_nsfw_weights.h5"
 #   adamcodd: "~/.cache/huggingface/hub/models--AdamCodd--vit-base-nsfw-detector/snapshots/main"
-#   clip: "~/.cache/huggingface/hub/models--openai--clip-vit-base-patch32/snapshots/main"
 #
-# Windows (use forward slashes or double backslashes):
-# model_paths:
+# Windows:
 #   opennsfw2: "C:/Users/username/.opennsfw2/weights/open_nsfw_weights.h5"
 #   adamcodd: "C:/Users/username/.cache/huggingface/hub/models--AdamCodd--vit-base-nsfw-detector/snapshots/main"
-#   clip: "C:/Users/username/.cache/huggingface/hub/models--openai--clip-vit-base-patch32/snapshots/main"
 
 # Score ranges from 0.0 (safe) to 1.0 (explicit)
 # Lower threshold = stricter filtering
 nsfw_threshold: 0.80
 
-# Violence/Safety Detection (LAION-SAFETY style using CLIP)
-# Uses zero-shot classification to detect:
+# Violence/Safety Detection (CLIP ViT-H/14 zero-shot classification)
+# Model: laion/CLIP-ViT-H-14-laion2B-s32B-b79K (78% accuracy)
+# Detects:
 #   - violence, gore, blood, injury
 #   - weapons (guns, knives)
 #   - disturbing/graphic content
@@ -59,8 +65,9 @@ nsfw_threshold: 0.80
 enable_violence_check: true
 violence_threshold: 0.70
 
-# Hate Symbol Detection (CLIP zero-shot classification)
-# Detects extremist imagery, nazi symbols, racist symbols
+# Hate Symbol Detection (CLIP ViT-H/14 zero-shot classification)
+# Model: laion/CLIP-ViT-H-14-laion2B-s32B-b79K (78% accuracy)
+# Detects: extremist imagery, nazi symbols, racist symbols
 enable_hate_symbol_check: true
 hate_symbol_threshold: 0.75
 
