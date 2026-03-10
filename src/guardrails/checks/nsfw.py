@@ -117,19 +117,27 @@ class NSFWCheck(BaseCheck):
 
         if not model_cache.has("nsfw_adamcodd_model"):
             logger.info(f"Loading AdamCodd NSFW model from: {model_name}")
+
+            # Check if FP16 is enabled (reduces memory by 50%, faster inference)
+            use_fp16 = config.get("use_fp16", False)
+            dtype_kwargs = {}
+            if use_fp16:
+                dtype_kwargs["torch_dtype"] = torch.float16
+                logger.info("Using FP16 precision (half memory, faster inference)")
+
             try:
                 model_cache.set("nsfw_adamcodd_processor", AutoImageProcessor.from_pretrained(
                     model_name, local_files_only=True
                 ))
                 model_cache.set("nsfw_adamcodd_model", AutoModelForImageClassification.from_pretrained(
-                    model_name, local_files_only=True
+                    model_name, local_files_only=True, **dtype_kwargs
                 ))
                 logger.info("Loaded AdamCodd NSFW model from local cache")
             except Exception:
                 logger.info("Model not in local cache, trying to download...")
                 try:
                     model_cache.set("nsfw_adamcodd_processor", AutoImageProcessor.from_pretrained(model_name))
-                    model_cache.set("nsfw_adamcodd_model", AutoModelForImageClassification.from_pretrained(model_name))
+                    model_cache.set("nsfw_adamcodd_model", AutoModelForImageClassification.from_pretrained(model_name, **dtype_kwargs))
                 except Exception as e:
                     logger.warning(f"Cannot load AdamCodd model: {e}")
                     model_cache.set("nsfw_adamcodd_unavailable", True)

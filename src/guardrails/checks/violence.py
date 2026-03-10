@@ -63,14 +63,22 @@ class ViolenceCheck(BaseCheck):
 
         if not model_cache.has("clip_model"):
             logger.info(f"Loading CLIP model from: {model_name}")
+
+            # Check if FP16 is enabled (reduces memory by 50%, faster inference)
+            use_fp16 = config.get("use_fp16", False)
+            dtype_kwargs = {}
+            if use_fp16:
+                dtype_kwargs["torch_dtype"] = torch.float16
+                logger.info("Using FP16 precision (half memory, faster inference)")
+
             try:
-                model_cache.set("clip_model", CLIPModel.from_pretrained(model_name, local_files_only=True))
+                model_cache.set("clip_model", CLIPModel.from_pretrained(model_name, local_files_only=True, **dtype_kwargs))
                 model_cache.set("clip_processor", CLIPProcessor.from_pretrained(model_name, local_files_only=True))
                 logger.info("Loaded CLIP model from local cache")
             except Exception:
                 logger.info("Model not in local cache, trying to download...")
                 try:
-                    model_cache.set("clip_model", CLIPModel.from_pretrained(model_name))
+                    model_cache.set("clip_model", CLIPModel.from_pretrained(model_name, **dtype_kwargs))
                     model_cache.set("clip_processor", CLIPProcessor.from_pretrained(model_name))
                 except Exception as e:
                     logger.warning(f"Cannot load CLIP model: {e}")

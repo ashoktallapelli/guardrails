@@ -170,6 +170,9 @@ guardrails:
 model_paths:
   clip: "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 
+# Model precision (FP16 = faster, less memory)
+use_fp16: true
+
 # For Windows (use full local path):
 # model_paths:
 #   clip: "C:/Users/username/.cache/huggingface/hub/models--laion--CLIP-ViT-H-14-laion2B-s32B-b79K/snapshots/main"
