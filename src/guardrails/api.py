@@ -1,12 +1,11 @@
 """
-api.py - FastAPI REST API for guardrails.
+api.py - FastAPI REST API for image guardrails.
 
 Usage:
     uvicorn guardrails.api:app --reload --port 8000
 
 Endpoints:
     POST /scan/image    - Scan image for safety
-    POST /scan/text     - Scan text for PII
     GET  /check_health  - Health check
     GET  /config        - View configuration
 """
@@ -61,20 +60,6 @@ class ScanImageResponse(BaseModel):
     results: Dict[str, MetricResponseOutput]
     image_base64: Optional[str] = None
     meta: Dict[str, Any] = {}
-
-
-class TextScanRequest(BaseModel):
-    """Request body for /scan/text endpoint."""
-    input_text: str = Field(..., min_length=1, description="Text to scan for PII")
-
-
-class TextScanResponse(BaseModel):
-    """Response for /scan/text endpoint."""
-    decision: str  # ALLOW or REJECT
-    reason: str
-    is_safe: bool
-    results: Dict[str, MetricResponseOutput]
-    entities: list = []
 
 
 class HealthCheckResponse(BaseModel):
@@ -358,125 +343,6 @@ async def scan_image(
             "processing_ms": processing_ms,
             "filename": file.filename or "unknown",
         }
-    )
-
-
-@app.post("/scan/text", response_model=TextScanResponse, tags=["Scan"])
-async def scan_text(request: TextScanRequest):
-    """
-    ## Overview
-
-    Validates text for PII before AI processing.
-
-    This endpoint analyzes the input text using Presidio to detect
-    Personally Identifiable Information (PII) to ensure compliance and privacy.
-
-    **Detection includes:**
-    - Email addresses
-    - Phone numbers
-    - Person names
-    - Credit card numbers
-    - Social Security Numbers (SSN)
-    - IP addresses
-    - Locations
-
-    ---
-
-    ## Request
-
-    **Content-Type:** `application/json`
-
-    **input_text** *(required)*
-    - The text content to scan for PII
-    - Must not be empty
-    - Must contain at least 1 character
-
-    ---
-
-    ## Response
-
-    **decision** - Final verdict for the text
-    - `ALLOW`: No PII detected. Text is safe.
-    - `REJECT`: PII found. Text rejected with details.
-
-    **reason** - Human-readable explanation with entity counts
-
-    **is_safe** - Boolean indicating if text passed checks
-
-    **results** - Scanner results with entity count
-
-    **entities** - List of detected PII entities with type, value, and confidence
-
-    ---
-
-    ## Example Request
-
-    ```json
-    {
-      "input_text": "Contact John Doe at john@example.com or 555-123-4567"
-    }
-    ```
-
-    ## Example Response (REJECT)
-
-    ```json
-    {
-      "decision": "REJECT",
-      "reason": "PII detected: 3 entities (PERSON, EMAIL_ADDRESS, PHONE_NUMBER)",
-      "is_safe": false,
-      "results": {
-        "pii": {"score": 3, "threshold": 0.35, "is_pass": false}
-      },
-      "entities": [
-        {"type": "PERSON", "text": "John Doe", "score": 0.85},
-        {"type": "EMAIL_ADDRESS", "text": "john@example.com", "score": 0.95},
-        {"type": "PHONE_NUMBER", "text": "555-123-4567", "score": 0.75}
-      ]
-    }
-    ```
-
-    ## Example Response (ALLOW)
-
-    ```json
-    {
-      "decision": "ALLOW",
-      "reason": "All checks passed",
-      "is_safe": true,
-      "results": {
-        "pii": {"score": 0, "threshold": 0.35, "is_pass": true}
-      },
-      "entities": []
-    }
-    ```
-    """
-    # Run pipeline
-    pipeline_result = _pipeline.run_text(request.input_text, anonymize=True)
-
-    # Convert to API response format
-    results: Dict[str, MetricResponseOutput] = {}
-    entities = []
-
-    pii_check = pipeline_result.get("checks", {}).get("pii", {})
-    if pii_check:
-        pii_details = pii_check.get("details", {})
-        results["pii"] = MetricResponseOutput(
-            score=float(pii_details.get("entity_count", 0)),
-            threshold=_config.get("pii_score_threshold", 0.35),
-            is_pass=True,
-            is_error=False
-        )
-        entities = pii_details.get("entities", [])
-
-    # Get decision and reason
-    decision = pipeline_result.get("decision", "ALLOW")
-    reason = pipeline_result.get("reason", "All checks passed")
-
-    return TextScanResponse(
-        decision=decision,
-        reason=reason,
-        is_safe=pipeline_result.get("is_safe", True),
-        results=results,
-        entities=entities,
     )
 
 

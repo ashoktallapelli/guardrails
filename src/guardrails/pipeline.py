@@ -202,26 +202,6 @@ class Pipeline:
 
         return result
 
-    def run_text(self, text: str, anonymize: bool = True) -> Dict[str, Any]:
-        """
-        Convenience method to run pipeline on text.
-
-        Args:
-            text: Text to check
-            anonymize: Whether to anonymize PII
-
-        Returns:
-            Result dictionary
-        """
-        result = self.run(text, input_type="text")
-        result["input_type"] = "text"
-        result["original_length"] = len(text)
-
-        if anonymize and result.get("output"):
-            result["anonymized_text"] = result["output"]
-
-        return result
-
     def _strip_exif(self, img):
         """Strip EXIF metadata from image."""
         from PIL import Image

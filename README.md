@@ -1,6 +1,6 @@
-# Guardrails
+# Image Guardrails
 
-A pluggable pipeline for validating and sanitizing images/text before AI processing.
+A pluggable pipeline for validating and sanitizing images before AI processing.
 
 ## Features
 
@@ -13,6 +13,61 @@ A pluggable pipeline for validating and sanitizing images/text before AI process
 - **Face Detection** - OpenCV Haar Cascade
 - **Pluggable Architecture** - Add new checks via config
 - **Configurable Labels** - Customize detection labels per region
+
+## Pipeline Flow
+
+```mermaid
+flowchart TB
+    subgraph INPUT[" "]
+        A[/"📷 Image Upload"/]
+    end
+
+    subgraph PIPELINE["⚡ Guardrails Pipeline"]
+        direction TB
+        B["1️⃣ File Validation<br/>Size & Type Check"]
+        C["2️⃣ NSFW Detection<br/>Threshold: 0.80"]
+        D["3️⃣ Violence Detection<br/>Threshold: 0.70"]
+        E["4️⃣ Hate Symbols<br/>Threshold: 0.75"]
+        F["5️⃣ PII Detection<br/>OCR → AI-Force"]
+        G["6️⃣ Face Detection<br/>Privacy Check"]
+
+        B --> C --> D --> E --> F --> G
+    end
+
+    subgraph OUTPUT[" "]
+        H["✅ ALLOW<br/>Return sanitized image"]
+        I["❌ REJECT<br/>Return reason"]
+    end
+
+    A --> B
+    G -->|All Pass| H
+    B -.->|Fail| I
+    C -.->|Fail| I
+    D -.->|Fail| I
+    E -.->|Fail| I
+    F -.->|Fail| I
+    G -.->|Fail| I
+
+    style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    style B fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style C fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style D fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style E fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style F fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style G fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style H fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    style I fill:#ffebee,stroke:#d32f2f,stroke-width:2px
+    style PIPELINE fill:#fafafa,stroke:#616161,stroke-width:1px
+```
+
+### Key Behaviors
+
+| Behavior | Description |
+|----------|-------------|
+| **Early Exit** | Pipeline stops immediately on first failed check |
+| **Explainability** | Rejection includes specific reason (e.g., "guns=0.89") |
+| **Skipped Checks** | Response includes `not_run` list of checks not executed |
+| **No Redaction** | Only ALLOW or REJECT decisions |
 
 ## Models Used
 
@@ -100,9 +155,6 @@ uv run python -m guardrails test_images/sample.jpg --analyze-only
 
 # JSON output
 uv run python -m guardrails test_images/sample.jpg --json
-
-# Text PII
-uv run python -m guardrails --text "Contact john@example.com" --anonymize
 ```
 
 ### API
@@ -113,11 +165,6 @@ uv run uvicorn guardrails.api:app --reload --port 8000
 
 # Scan image
 curl -X POST "http://localhost:8000/scan/image" -F "file=@image.jpg"
-
-# Scan text
-curl -X POST "http://localhost:8000/scan/text" \
-  -H "Content-Type: application/json" \
-  -d '{"input_text": "Contact john@example.com"}'
 
 # Health check
 curl http://localhost:8000/check_health
@@ -131,15 +178,10 @@ from guardrails import Pipeline, load_config
 config = load_config()
 pipeline = Pipeline(config)
 
-# Image
 result = pipeline.run_image("image.jpg")
 if result["decision"] == "ALLOW":
     # Process image
     pass
-
-# Text
-result = pipeline.run_text("Contact john@example.com", anonymize=True)
-print(result["anonymized_text"])
 ```
 
 ## Decision States
@@ -259,11 +301,88 @@ guardrails:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/scan/image` | Scan and sanitize image |
-| POST | `/scan/text` | Scan and anonymize text |
 | GET | `/check_health` | Health check |
 | GET | `/config` | View configuration |
 
 **Swagger UI:** http://localhost:8000/docs
+
+### API Request Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as /scan/image
+    participant Pipeline
+    participant FileCheck as File Validation
+    participant NSFW as NSFW Check
+    participant Violence as Violence Check
+    participant Hate as Hate Symbols
+    participant OCR as Tesseract OCR
+    participant AIForce as AI-Force /scan/prompt
+    participant Faces as Face Detection
+
+    Client->>API: POST image file
+    API->>API: Validate file type & size
+    API->>Pipeline: Run image guardrails
+
+    Pipeline->>FileCheck: Validate file
+    FileCheck-->>Pipeline: PASS
+
+    Pipeline->>NSFW: Check image
+    NSFW-->>Pipeline: score=0.02 (PASS)
+
+    Pipeline->>Violence: Check image
+    Violence-->>Pipeline: score=0.15 (PASS)
+
+    Pipeline->>Hate: Check image
+    Hate-->>Pipeline: score=0.05 (PASS)
+
+    Pipeline->>OCR: Extract text from image
+    OCR-->>Pipeline: extracted_text
+    Pipeline->>AIForce: POST /scan/prompt (extracted_text)
+    AIForce-->>Pipeline: PII result (PASS/REJECT)
+
+    Pipeline->>Faces: Detect faces
+    Faces-->>Pipeline: face_count=0 (PASS)
+
+    Pipeline-->>API: ALLOW (all checks passed)
+    API->>API: Strip EXIF metadata
+    API-->>Client: {"decision": "ALLOW", "image_base64": "..."}
+```
+
+### API Rejection Flow (Early Exit)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as /scan/image
+    participant Pipeline
+    participant FileCheck as File Validation
+    participant NSFW as NSFW Check
+    participant Violence as Violence Check
+    participant Hate as Hate Symbols
+    participant OCR as Tesseract OCR
+    participant AIForce as AI-Force /scan/prompt
+    participant Faces as Face Detection
+
+    Client->>API: POST image file
+    API->>API: Validate file type & size
+    API->>Pipeline: Run image guardrails
+
+    Pipeline->>FileCheck: Validate file
+    FileCheck-->>Pipeline: PASS
+
+    Pipeline->>NSFW: Check image
+    NSFW-->>Pipeline: score=0.02 (PASS)
+
+    Pipeline->>Violence: Check image
+    Violence-->>Pipeline: score=0.89, guns detected (FAIL)
+
+    Note over Pipeline,Faces: Early Exit - Remaining checks skipped
+
+    Pipeline-->>API: REJECT
+    API-->>Client: {"decision": "REJECT", "reason": "guns=0.89", "not_run": ["hate_symbols", "pii", "faces"]}
+```
 
 ## API Response Example
 
