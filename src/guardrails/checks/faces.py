@@ -39,13 +39,11 @@ class FacesCheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
-        fail_closed = config.get("fail_closed", False)
-
         try:
             import cv2
             import numpy as np
         except ImportError:
-            return fail_result(self.name, "opencv-python not installed", fail_closed)
+            return fail_result(self.name, "opencv-python not installed")
 
         try:
             # Convert PIL to OpenCV format
@@ -92,7 +90,7 @@ class FacesCheck(BaseCheck):
             )
 
         except Exception as e:
-            return fail_result(self.name, str(e), fail_closed)
+            return fail_result(self.name, str(e))
 
     def redact(self, input_data, config: Dict[str, Any]):
         """

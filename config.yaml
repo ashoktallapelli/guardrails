@@ -105,35 +105,13 @@ enable_pii_redaction: true
 enable_face_blur: true
 face_blur_kernel_size: 51  # Must be odd number; larger = more blur
 
-# Privacy features - Text PII
-enable_text_pii: true
-pii_language: "en"
-pii_score_threshold: 0.35  # Minimum confidence score (0.0-1.0) - lowered to catch phone numbers
-
-# PII anonymization operator: replace, redact, mask, hash
-pii_operator: "replace"
-
-# Custom operator config per entity type (optional)
-# pii_operator_config:
-#   EMAIL:
-#     type: "replace"
-#     params: {"new_value": "[EMAIL_REDACTED]"}
-#   PHONE_NUMBER:
-#     type: "mask"
-#     params: {"masking_char": "*", "chars_to_mask": 8}
-#   PERSON:
-#     type: "replace"
-#     params: {"new_value": "<PERSON>"}
-
-# Entity types to detect (null = all)
-# pii_entity_types:
-#   - "EMAIL_ADDRESS"
-#   - "PHONE_NUMBER"
-#   - "PERSON"
-#   - "CREDIT_CARD"
-#   - "US_SSN"
-#   - "IP_ADDRESS"
-#   - "LOCATION"
+# AI-Force PII API Configuration
+pii_api:
+  url: "https://aiforce.hcltech.com/sgs"
+  token: ""  # Set via environment variable AIFORCE_API_TOKEN
+  security_group: "security_group_0"
+  verify_ssl: false  # Set true if SSL certificates are configured
+  timeout: 30
 
 # Output settings
 output_quality: 95  # JPEG quality (1-100)
@@ -142,9 +120,6 @@ output_quality: 95  # JPEG quality (1-100)
 log_level: "INFO"
 log_decisions_to_file: true
 log_file_path: "guardrails_audit.log"
-
-# Production settings
-fail_closed: false        # true = reject on errors, false = allow on errors
 
 # Environment settings (for HuggingFace/Transformers)
 # Set to true after models are downloaded to prevent network calls

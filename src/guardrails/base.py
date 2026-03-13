@@ -23,35 +23,25 @@ class CheckResult:
     reason: Optional[str] = None
 
 
-def fail_result(check_name: str, error: str, fail_closed: bool = False) -> CheckResult:
+def fail_result(check_name: str, error: str) -> CheckResult:
     """
-    Create a CheckResult for error cases.
+    Create a CheckResult for error cases. Always rejects on error (safe default).
 
     Args:
         check_name: Name of the check that failed
         error: Error message
-        fail_closed: If True, reject on error. If False, allow on error.
 
     Returns:
-        CheckResult with appropriate action
+        CheckResult with reject action
     """
-    if fail_closed:
-        logger.warning(f"{check_name} failed (fail-closed): {error}")
-        return CheckResult(
-            safe=False,
-            score=1.0,
-            action="reject",
-            reason=f"{check_name} error (fail-closed): {error}",
-            details={"error": error, "fail_closed": True}
-        )
-    else:
-        logger.warning(f"{check_name} failed (fail-open): {error}")
-        return CheckResult(
-            safe=True,
-            score=0.0,
-            action="allow",
-            details={"error": error, "skipped": True}
-        )
+    logger.warning(f"{check_name} error: {error}")
+    return CheckResult(
+        safe=False,
+        score=1.0,
+        action="reject",
+        reason=f"{check_name} error: {error}",
+        details={"error": error}
+    )
 
 
 class BaseCheck(ABC):

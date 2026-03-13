@@ -44,12 +44,10 @@ class NSFWCheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
-        fail_closed = config.get("fail_closed", False)
-
         if self.model_type == "adamcodd":
-            result = self._check_adamcodd(input_data, config, fail_closed)
+            result = self._check_adamcodd(input_data, config)
         else:
-            result = self._check_opennsfw2(input_data, config, fail_closed)
+            result = self._check_opennsfw2(input_data, config)
 
         # If helper returned a CheckResult (error case), return it directly
         if isinstance(result, CheckResult):
@@ -68,12 +66,12 @@ class NSFWCheck(BaseCheck):
             details={"model": self.model_type}
         )
 
-    def _check_opennsfw2(self, img, config: Dict[str, Any], fail_closed: bool) -> Union[Tuple[bool, float], CheckResult]:
+    def _check_opennsfw2(self, img, config: Dict[str, Any]) -> Union[Tuple[bool, float], CheckResult]:
         """Run NSFW detection using OpenNSFW2."""
         try:
             import opennsfw2 as n2
         except ImportError:
-            return fail_result(self.name, "opennsfw2 not installed", fail_closed)
+            return fail_result(self.name, "opennsfw2 not installed")
 
         # Check for local weights file - use config path if provided
         model_paths = config.get("model_paths", {})
@@ -88,7 +86,7 @@ class NSFWCheck(BaseCheck):
         if not weights_path.exists():
             logger.warning(f"NSFW weights not found at {weights_path}")
             logger.warning("Download from: https://github.com/bhky/opennsfw2/releases/download/v0.1.0/open_nsfw_weights.h5")
-            return fail_result(self.name, f"weights not found at {weights_path}", fail_closed)
+            return fail_result(self.name, f"weights not found at {weights_path}")
 
         try:
             score = float(n2.predict_image(img, weights_path=str(weights_path)))
@@ -96,15 +94,15 @@ class NSFWCheck(BaseCheck):
             logger.info(f"NSFW score: {score:.4f} (threshold: {self.threshold})")
             return is_safe, score
         except Exception as e:
-            return fail_result(self.name, str(e), fail_closed)
+            return fail_result(self.name, str(e))
 
-    def _check_adamcodd(self, img, config: Dict[str, Any], fail_closed: bool) -> Union[Tuple[bool, float], CheckResult]:
+    def _check_adamcodd(self, img, config: Dict[str, Any]) -> Union[Tuple[bool, float], CheckResult]:
         """Run NSFW detection using AdamCodd/vit-base-nsfw-detector."""
         try:
             from transformers import AutoImageProcessor, AutoModelForImageClassification
             import torch
         except ImportError:
-            return fail_result(self.name, "transformers/torch not installed", fail_closed)
+            return fail_result(self.name, "transformers/torch not installed")
 
         # Use config path if provided, otherwise use HuggingFace model name
         model_paths = config.get("model_paths", {})
@@ -141,10 +139,10 @@ class NSFWCheck(BaseCheck):
                 except Exception as e:
                     logger.warning(f"Cannot load AdamCodd model: {e}")
                     model_cache.set("nsfw_adamcodd_unavailable", True)
-                    return fail_result(self.name, f"model unavailable: {e}", fail_closed)
+                    return fail_result(self.name, f"model unavailable: {e}")
 
         if model_cache.get("nsfw_adamcodd_unavailable"):
-            return fail_result(self.name, "model unavailable", fail_closed)
+            return fail_result(self.name, "model unavailable")
 
         processor = model_cache.get("nsfw_adamcodd_processor")
         model = model_cache.get("nsfw_adamcodd_model")
@@ -160,4 +158,4 @@ class NSFWCheck(BaseCheck):
             logger.info(f"AdamCodd NSFW score: {nsfw_score:.4f} (threshold: {self.threshold})")
             return is_safe, nsfw_score
         except Exception as e:
-            return fail_result(self.name, str(e), fail_closed)
+            return fail_result(self.name, str(e))

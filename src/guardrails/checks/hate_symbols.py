@@ -44,13 +44,11 @@ class HateSymbolsCheck(BaseCheck):
         if not self.enabled:
             return CheckResult(safe=True, score=0.0, action="allow", details={"skipped": True})
 
-        fail_closed = config.get("fail_closed", False)
-
         try:
             from transformers import CLIPProcessor, CLIPModel
             import torch
         except ImportError:
-            return fail_result(self.name, "transformers/torch not installed", fail_closed)
+            return fail_result(self.name, "transformers/torch not installed")
 
         # Load CLIP model (shared with violence check) - use config path if provided
         model_paths = config.get("model_paths", {})
@@ -84,10 +82,10 @@ class HateSymbolsCheck(BaseCheck):
                     logger.warning(f"Cannot load CLIP model: {e}")
                     logger.warning("Set model_paths.clip in config.yaml to specify custom path")
                     model_cache.set("clip_unavailable", True)
-                    return fail_result(self.name, f"model unavailable: {e}", fail_closed)
+                    return fail_result(self.name, f"model unavailable: {e}")
 
         if model_cache.get("clip_unavailable"):
-            return fail_result(self.name, "model unavailable", fail_closed)
+            return fail_result(self.name, "model unavailable")
 
         model = model_cache.get("clip_model")
         processor = model_cache.get("clip_processor")
@@ -155,4 +153,4 @@ class HateSymbolsCheck(BaseCheck):
             )
 
         except Exception as e:
-            return fail_result(self.name, str(e), fail_closed)
+            return fail_result(self.name, str(e))
