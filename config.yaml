@@ -60,10 +60,7 @@ use_fp16: true
 # Lower threshold = stricter filtering
 nsfw_threshold: 0.80
 
-# Violence/Safety Detection (CLIP ViT-H/14 zero-shot classification)
-# Model: laion/CLIP-ViT-H-14-laion2B-s32B-b79K (78% accuracy)
-# Combined unsafe score threshold (sum of all unsafe labels)
-enable_violence_check: true
+# Violence/Safety Detection (CLIP zero-shot classification)
 violence_threshold: 0.70
 
 # Violence detection labels (configurable)
@@ -76,9 +73,7 @@ violence_labels:
   - "guns, weapons, knives, dangerous objects"
   - "self-harm, suicide, cutting"
 
-# Hate Symbol Detection (CLIP ViT-H/14 zero-shot classification)
-# Model: laion/CLIP-ViT-H-14-laion2B-s32B-b79K (78% accuracy)
-enable_hate_symbol_check: true
+# Hate Symbol Detection (CLIP zero-shot classification)
 hate_symbol_threshold: 0.75
 
 # Hate symbol detection labels (configurable)
@@ -100,12 +95,10 @@ hate_labels:
 #     - "KKK imagery, burning cross, racist symbols"
 #     - "ISIS flag, terrorist symbols"
 
-# Privacy features - Image
-enable_pii_redaction: true
-enable_face_blur: true
+# Face Detection
 face_blur_kernel_size: 51  # Must be odd number; larger = more blur
 
-# AI-Force PII API Configuration
+# PII Detection (AI-Force API)
 pii_api:
   url: "https://aiforce.hcltech.com/sgs"
   token: ""  # Set via environment variable AIFORCE_API_TOKEN
